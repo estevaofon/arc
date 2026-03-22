@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:docs.agno.com)",
+      "Bash(gh api:*)",
+      "Bash(cd:*)",
+      "Bash(uv add:*)",
+      "Bash(uv run:*)"
+    ]
+  }
+}

@@ -1,0 +1,16 @@
+[project]
+name = "arc"
+version = "0.1.0"
+description = "A Claude Code clone built with Agno agents"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "agno",
+    "anthropic",
+    "python-dotenv>=1.2.2",
+    "rich",
+    "sqlalchemy>=2.0.48",
+]
+
+[project.scripts]
+arc = "arc.cli:main"
