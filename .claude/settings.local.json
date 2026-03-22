@@ -6,7 +6,8 @@
       "Bash(cd:*)",
       "Bash(uv add:*)",
       "Bash(uv run:*)",
-      "Bash(uv sync:*)"
+      "Bash(uv sync:*)",
+      "Bash(find /d/OneDrive/Documentos/python_projects/arc/arc -type f -name *.py)"
     ]
   }
 }

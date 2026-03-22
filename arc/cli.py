@@ -11,12 +11,11 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
-from rich.console import Console, ConsoleOptions, Group, RenderResult
+from rich.console import Console, ConsoleOptions, RenderResult
 from rich.live import Live
 from rich.markdown import Markdown
 from rich.measure import Measurement
 from rich.panel import Panel
-from rich.rule import Rule
 from rich.spinner import Spinner
 from rich.syntax import Syntax
 from rich.text import Text
@@ -285,20 +284,98 @@ class StatusBar:
         return Measurement(1, options.max_width)
 
 
+TOOL_DISPLAY_NAMES = {
+    "read_file": "Read",
+    "write_file": "Write",
+    "write_files": "Write",
+    "edit_file": "Edit",
+    "edit_files": "Edit",
+    "glob_search": "Glob",
+    "grep_search": "Grep",
+    "list_directory": "List",
+    "bash": "Bash",
+}
+
+TOOL_PRIMARY_ARG = {
+    "read_file": "file_path",
+    "write_file": "file_path",
+    "edit_file": "file_path",
+    "glob_search": "pattern",
+    "grep_search": "pattern",
+    "list_directory": "directory",
+    "bash": "command",
+}
+
+
+def _format_tool_label(tool_name: str, tool_args: dict | None) -> str:
+    """Format a tool call into a Claude Code-style label like Read(file_path)."""
+    display = TOOL_DISPLAY_NAMES.get(tool_name, tool_name)
+    if not tool_args:
+        return display
+
+    # Batch tools: show count
+    if tool_name == "write_files":
+        files = tool_args.get("files", [])
+        return f"{display}({len(files)} files)"
+    if tool_name == "edit_files":
+        edits = tool_args.get("edits", [])
+        return f"{display}({len(edits)} edits)"
+
+    # Single-arg tools: show the primary arg value
+    primary_key = TOOL_PRIMARY_ARG.get(tool_name)
+    if primary_key and primary_key in tool_args:
+        value = str(tool_args[primary_key])
+        # Truncate long values
+        if len(value) > 60:
+            value = value[:57] + "..."
+        return f"{display}({value})"
+
+    return display
+
+
 class StreamingDisplay:
-    """Combines streamed content on top with a persistent status bar at the bottom."""
+    """Shows only un-flushed streaming content + status bar.
+
+    Tool activity is printed as static output (above Live), not inside Live.
+    When a permission prompt pauses Live, flush() is called to mark current
+    content as already printed — so Live doesn't re-render it when it resumes.
+    """
 
     def __init__(self, status_bar: StatusBar):
         self.status_bar = status_bar
-        self.content: Markdown | None = None
+        self._flushed_len: int = 0       # how much of accumulated was already printed
+        self._accumulated: str = ""       # full accumulated content
+        self._content: Markdown | None = None
 
-    def __rich_console__(self, console: Console, options: ConsoleOptions) -> RenderResult:
-        if self.content is not None:
-            yield self.content
-            yield Text()  # blank line separator
+    def set_content(self, accumulated: str):
+        """Update with the full accumulated content; only the un-flushed part is displayed."""
+        self._accumulated = accumulated
+        delta = accumulated[self._flushed_len:]
+        self.content = Markdown(delta) if delta else None
+
+    def flush(self):
+        """Print current un-flushed content statically and mark it as flushed."""
+        delta = self._accumulated[self._flushed_len:]
+        if delta:
+            console.print(Markdown(delta))
+        self._flushed_len = len(self._accumulated)
+        self.content = None
+
+    @property
+    def content(self) -> Markdown | None:
+        return self._content
+
+    @content.setter
+    def content(self, value: Markdown | None):
+        self._content = value
+
+    def __rich_console__(self, rconsole: Console, options: ConsoleOptions) -> RenderResult:
+        if self._content is not None:
+            yield self._content
+            yield Text()
         yield self.status_bar
 
-    def __rich_measure__(self, console: Console, options: ConsoleOptions) -> Measurement:
+    def __rich_measure__(self, rconsole: Console, options: ConsoleOptions) -> Measurement:
         return Measurement(1, options.max_width)
 
 
@@ -315,48 +392,74 @@ async def run_agent_capture(agent, message: str) -> str | None:
     final_content = None
 
     try:
+        from arc.tools.codebase import set_display, set_live
+
         status = StatusBar(interval=3.0)
         display = StreamingDisplay(status)
+        current_tool_label: str | None = None
 
         with Live(display, console=console, refresh_per_second=10) as live:
+            set_live(live)
+            set_display(display)
             accumulated = ""
             async for event in agent.arun(message, stream=True):
                 if isinstance(event, ToolCallStartedEvent):
                     tool_name = event.tool_name if hasattr(event, "tool_name") else "tool"
-                    tool_args = ""
-                    if hasattr(event, "tool_args") and event.tool_args:
-                        tool_args = ", ".join(
-                            f"{k}={repr(v)[:60]}" for k, v in event.tool_args.items()
-                        )
-                    status.set_text(f"Calling {tool_name}({tool_args})...")
+                    tool_args = event.tool_args if hasattr(event, "tool_args") else None
+                    current_tool_label = _format_tool_label(tool_name, tool_args)
+                    # Flush any accumulated content before tool runs
+                    if accumulated[display._flushed_len:]:
+                        live.stop()
+                        display.flush()
+                        live.start()
+                    status.set_text(f"{current_tool_label}...")
                     live.update(display)
 
                 elif isinstance(event, ToolCallCompletedEvent):
-                    tool_name = event.tool_name if hasattr(event, "tool_name") else "tool"
-                    status.set_text(f"{tool_name} done.")
-                    live.update(display)
+                    if current_tool_label:
+                        # Print completed tool as static output above Live
+                        live.console.print(Text.assemble(
+                            ("  ", ""),
+                            ("\u2713 ", "bold green"),
+                            (current_tool_label, "dim"),
+                        ))
+                        current_tool_label = None
                     status.resume_cycling()
+                    live.update(display)
 
                 elif isinstance(event, RunContentEvent):
                     if hasattr(event, "content") and event.content:
                         accumulated += event.content
-                        display.content = Markdown(accumulated)
+                        display.set_content(accumulated)
                         live.update(display)
 
                 elif isinstance(event, RunCompletedEvent):
                     if hasattr(event, "content") and event.content:
                         final_content = event.content
 
-        # Print final content cleanly outside Live context
+        set_live(None)
+        set_display(None)
+
+        # Print only un-flushed content
         if final_content:
-            console.print(Markdown(final_content))
-        elif accumulated:
+            # RunCompletedEvent returns full content — only print the un-flushed tail
+            if display._flushed_len > 0:
+                remaining = final_content[display._flushed_len:]
+                if remaining:
+                    console.print(Markdown(remaining))
+            else:
+                console.print(Markdown(final_content))
+        elif accumulated[display._flushed_len:]:
             final_content = accumulated
-            console.print(Markdown(accumulated))
+            console.print(Markdown(accumulated[display._flushed_len:]))
 
     except KeyboardInterrupt:
+        set_live(None)
+        set_display(None)
         console.print("\n[yellow]Interrupted.[/yellow]")
     except Exception as e:
+        set_live(None)
+        set_display(None)
         console.print(f"[red]Error: {e}[/red]")
 
     console.print()
@@ -372,14 +475,19 @@ def ask_yes_no(prompt: str) -> bool:
         return False
 
 
-async def run_cli():
+async def run_cli(skip_permissions: bool = False):
     """Main REPL loop."""
+    from arc.tools.codebase import set_console, set_skip_permissions, reset_allowed_actions
+    set_console(console)
+    set_skip_permissions(skip_permissions)
+
     console.print(Markdown(WELCOME))
     console.print(Panel(
         Text(f"Working directory: {os.getcwd()}", style="dim"),
         border_style="blue",
     ))
-    console.print(f"[dim]Model: [bold]{DEFAULT_MODEL}[/bold] ({AVAILABLE_MODELS[DEFAULT_MODEL]})[/dim]\n")
+    mode = "[bold red]skip permissions[/bold red]" if skip_permissions else "[bold green]safe mode[/bold green]"
+    console.print(f"[dim]Model: [bold]{DEFAULT_MODEL}[/bold] ({AVAILABLE_MODELS[DEFAULT_MODEL]}) | {mode}[/dim]\n")
 
     session = Session()
     planner = None
@@ -414,6 +522,9 @@ async def run_cli():
 
         if not user_input:
             continue
+
+        # Reset "allow all" approvals for each new user message
+        reset_allowed_actions()
 
         if user_input.lower() in ("/quit", "/exit", "quit", "exit"):
             console.print("[dim]Bye![/dim]")
@@ -522,4 +633,5 @@ def main():
     from dotenv import load_dotenv
 
     load_dotenv()
-    asyncio.run(run_cli())
+    skip_permissions = "--dangerously-skip-permissions" in sys.argv
+    asyncio.run(run_cli(skip_permissions=skip_permissions))

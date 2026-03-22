@@ -3,7 +3,7 @@
 from agno.agent import Agent
 from agno.models.anthropic import Claude
 
-from arc.tools.codebase import glob_search, grep_search, list_directory, read_file
+from arc.tools.codebase import glob_search, grep_search, list_directory, read_file, web_fetch
 
 PLANNER_INSTRUCTIONS = """\
 You are a software architect agent. Your job is to analyze codebases and create detailed implementation plans.
@@ -30,7 +30,7 @@ def create_planner(model_id: str = "claude-sonnet-4-5-20250929") -> Agent:
     return Agent(
         name="Planner",
         model=Claude(id=model_id),
-        tools=[read_file, glob_search, grep_search, list_directory],
+        tools=[read_file, glob_search, grep_search, list_directory, web_fetch],
         instructions=PLANNER_INSTRUCTIONS,
         markdown=True,
     )
