@@ -1,5 +1,6 @@
 """Interactive CLI for arc - a Claude Code clone."""
 
+import asyncio
 import os
 import random
 import subprocess
@@ -286,8 +287,8 @@ class StreamingDisplay:
         return Measurement(1, options.max_width)
 
 
-def run_agent_capture(agent, message: str) -> str | None:
-    """Run agent with streaming display and capture the final content."""
+async def run_agent_capture(agent, message: str) -> str | None:
+    """Run agent with async streaming display and parallel tool execution."""
     from agno.run.agent import (
         RunCompletedEvent,
         RunContentEvent,
@@ -304,7 +305,7 @@ def run_agent_capture(agent, message: str) -> str | None:
 
         with Live(display, console=console, refresh_per_second=10) as live:
             accumulated = ""
-            for event in agent.run(message, stream=True):
+            async for event in agent.arun(message, stream=True):
                 if isinstance(event, ToolCallStartedEvent):
                     tool_name = event.tool_name if hasattr(event, "tool_name") else "tool"
                     tool_args = ""
@@ -319,7 +320,6 @@ def run_agent_capture(agent, message: str) -> str | None:
                     tool_name = event.tool_name if hasattr(event, "tool_name") else "tool"
                     status.set_text(f"{tool_name} done.")
                     live.update(display)
-                    # Resume cycling after a brief pause on next tick
                     status.resume_cycling()
 
                 elif isinstance(event, RunContentEvent):
@@ -357,7 +357,7 @@ def ask_yes_no(prompt: str) -> bool:
         return False
 
 
-def run_cli():
+async def run_cli():
     """Main REPL loop."""
     console.print(Markdown(WELCOME))
     console.print(Panel(
@@ -374,9 +374,12 @@ def run_cli():
     while True:
         try:
             paste_state.clear()
-            user_text = prompt_session.prompt(
-                HTML("<b><cyan>arc&gt;</cyan></b> "),
-                multiline=False,
+            user_text = (
+                await asyncio.to_thread(
+                    prompt_session.prompt,
+                    HTML("<b><cyan>arc&gt;</cyan></b> "),
+                    multiline=False,
+                )
             ).strip()
         except (EOFError, KeyboardInterrupt):
             console.print("\n[dim]Bye![/dim]")
@@ -422,7 +425,7 @@ def run_cli():
             if context:
                 prompt = f"{task}\n\n---\nContext from this session:\n{context}"
 
-            plan_content = run_agent_capture(planner, prompt)
+            plan_content = await run_agent_capture(planner, prompt)
 
             if plan_content:
                 session.current_plan = plan_content
@@ -439,7 +442,7 @@ def run_cli():
                         f"## Task\n{task}\n\n"
                         f"## Plan\n{plan_content}"
                     )
-                    result = run_agent_capture(executor, exec_prompt)
+                    result = await run_agent_capture(executor, exec_prompt)
                     if result:
                         session.add_message("assistant", f"[Execution]\n{result}")
 
@@ -455,7 +458,7 @@ def run_cli():
                     f"## Task\n{session.plan_task}\n\n"
                     f"## Plan\n{session.current_plan}"
                 )
-                result = run_agent_capture(executor, exec_prompt)
+                result = await run_agent_capture(executor, exec_prompt)
                 if result:
                     session.add_message("user", "/exec (current plan)")
                     session.add_message("assistant", f"[Execution]\n{result}")
@@ -471,7 +474,7 @@ def run_cli():
                 if context:
                     prompt = f"{task}\n\n---\nContext from this session:\n{context}"
 
-                result = run_agent_capture(executor, prompt)
+                result = await run_agent_capture(executor, prompt)
                 if result:
                     session.add_message("user", f"/exec {task}")
                     session.add_message("assistant", f"[Execution]\n{result}")
@@ -479,7 +482,7 @@ def run_cli():
         else:
             agent = create_general_agent(session)
             session.add_message("user", user_input)
-            result = run_agent_capture(agent, user_input)
+            result = await run_agent_capture(agent, user_input)
             if result:
                 session.add_message("assistant", result)
 
@@ -489,4 +492,4 @@ def main():
     from dotenv import load_dotenv
 
     load_dotenv()
-    run_cli()
+    asyncio.run(run_cli())

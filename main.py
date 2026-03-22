@@ -1,5 +1,7 @@
 """arc - A Claude Code clone built with Agno agents."""
 
+import asyncio
+
 from dotenv import load_dotenv
 
 from arc.cli import run_cli
@@ -7,7 +9,7 @@ from arc.cli import run_cli
 
 def main():
     load_dotenv()
-    run_cli()
+    asyncio.run(run_cli())
 
 
 if __name__ == "__main__":
