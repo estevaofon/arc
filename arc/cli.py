@@ -140,7 +140,11 @@ def _create_prompt_session(paste_state: PasteState) -> PromptSession:
         lines = data.splitlines()
         if len(lines) > 1:
             paste_state.set(data)
+            # Preserve text typed before the paste (e.g., "/plan ")
+            existing_text = event.current_buffer.text
             event.current_buffer.reset()
+            if existing_text.strip():
+                event.current_buffer.insert_text(existing_text)
             # Dynamically enable toolbar now that paste exists
             session.bottom_toolbar = HTML(
                 f'  <b><style bg="ansiblue" fg="ansiwhite"> {paste_state.line_count} lines pasted </style></b>'
@@ -155,7 +159,7 @@ def _create_prompt_session(paste_state: PasteState) -> PromptSession:
 GENERAL_INSTRUCTIONS = """\
 You are arc, an AI coding assistant. You help users with software engineering tasks.
 
-You have access to tools for reading, writing, and editing files, searching the codebase, running shell commands, fetching web content, and delegating subtasks to sub-agents.
+You have access to tools for reading, writing, and editing files, searching the codebase, running shell commands, searching the web (web_search) and fetching web pages (web_fetch), and delegating subtasks to sub-agents.
 
 Use delegate_task when you can split work into independent subtasks that benefit from parallel execution. \
 For example, researching one part of the codebase while modifying another, or implementing changes in \
@@ -260,6 +264,10 @@ class Session:
         self.cwd: str = os.getcwd()
         self.created_at: str = time.strftime("%Y-%m-%d %H:%M:%S")
         self.updated_at: str = self.created_at
+        # Token usage tracking
+        self.total_input_tokens: int = 0
+        self.total_output_tokens: int = 0
+        self.api_calls: int = 0
 
     @property
     def model_id(self) -> str:
@@ -288,10 +296,25 @@ class Session:
         self.plan_task = None
         self.plan_steps = []
 
+    def track_tokens(self, metrics):
+        """Accumulate token usage from a RunCompletedEvent.metrics."""
+        if metrics is None:
+            return
+        self.total_input_tokens += getattr(metrics, "input_tokens", 0) or 0
+        self.total_output_tokens += getattr(metrics, "output_tokens", 0) or 0
+        self.api_calls += 1
+
+    @property
+    def token_summary(self) -> str:
+        total = self.total_input_tokens + self.total_output_tokens
+        if total == 0:
+            return ""
+        return f"tokens: {total:,} (in: {self.total_input_tokens:,} / out: {self.total_output_tokens:,}) | calls: {self.api_calls}"
+
     def add_message(self, role: str, content: str):
         self.history.append({"role": role, "content": content})
-        if len(self.history) > 40:
-            self.history = self.history[-40:]
+        if len(self.history) > 20:
+            self.history = self.history[-20:]
         self.updated_at = time.strftime("%Y-%m-%d %H:%M:%S")
 
     def to_dict(self) -> dict:
@@ -321,17 +344,18 @@ class Session:
         return session
 
     def get_context_summary(self) -> str:
-        """Build context string from conversation history and active plan."""
+        """Build compact context string from conversation history and active plan."""
         parts = []
         if self.current_plan:
-            parts.append(f"## Active Plan\nTask: {self.plan_task}\n\n{self.current_plan}")
+            # Send only plan progress (checkboxes), not the full plan text
+            parts.append(f"## Active Plan\nTask: {self.plan_task}\n\n{self.render_plan_progress()}")
         if self.history:
-            parts.append("## Conversation History")
-            for msg in self.history[-10:]:
+            parts.append("## Recent History")
+            for msg in self.history[-5:]:
                 prefix = "User" if msg["role"] == "user" else "Assistant"
                 content = msg["content"]
-                if len(content) > 500:
-                    content = content[:500] + "..."
+                if len(content) > 200:
+                    content = content[:200] + "..."
                 parts.append(f"**{prefix}:** {content}")
         return "\n\n".join(parts)
 
@@ -453,7 +477,7 @@ def create_general_agent(session: Session):
 
     return Agent(
         name="Arc",
-        model=Claude(id=session.model_id),
+        model=Claude(id=session.model_id, max_tokens=8192, cache_system_prompt=True),
         tools=ALL_TOOLS,
         instructions=GENERAL_INSTRUCTIONS.format(
             cwd=os.getcwd(),
@@ -665,7 +689,7 @@ class StreamingDisplay:
         return Measurement(1, options.max_width)
 
 
-async def run_agent_capture(agent, message: str) -> str | None:
+async def run_agent_capture(agent, message: str, session: "Session | None" = None) -> str | None:
     """Run agent with async streaming display and parallel tool execution."""
     from agno.run.agent import (
         RunCompletedEvent,
@@ -698,6 +722,7 @@ async def run_agent_capture(agent, message: str) -> str | None:
                         live.stop()
                         display.flush()
                         live.start()
+                        live._live_render._shape = None  # prevent overwriting flushed content
                     status.set_text(f"{current_tool_label}...")
                     live.update(display)
 
@@ -720,6 +745,8 @@ async def run_agent_capture(agent, message: str) -> str | None:
                         live.update(display)
 
                 elif isinstance(event, RunCompletedEvent):
+                    if session and hasattr(event, "metrics"):
+                        session.track_tokens(event.metrics)
                     if hasattr(event, "content") and event.content:
                         final_content = event.content
 
@@ -775,7 +802,7 @@ async def execute_plan_steps(session: Session, executor_factory) -> str | None:
             f"## Task\n{session.plan_task}\n\n"
             f"## Plan\n{session.current_plan}"
         )
-        return await run_agent_capture(executor, exec_prompt)
+        return await run_agent_capture(executor, exec_prompt, session)
 
     all_results = []
     completed_context = ""
@@ -795,24 +822,21 @@ async def execute_plan_steps(session: Session, executor_factory) -> str | None:
         step.status = "in_progress"
         console.print(f"[bold yellow]>>> Step {step.index}:[/bold yellow] {step.description}")
 
-        # Build step-specific prompt with context of completed steps
+        # Build step-specific prompt — compact to save tokens
         step_prompt = (
-            f"You are executing step {step.index} of a plan.\n\n"
-            f"## Overall Task\n{session.plan_task}\n\n"
-            f"## Current Step\n{step.description}\n\n"
-            f"## Full Plan\n{session.current_plan}\n"
+            f"## Task: {session.plan_task}\n\n"
+            f"## Current Step ({step.index}/{len(session.plan_steps)})\n{step.description}\n\n"
+            f"## Plan Progress\n{session.render_plan_progress()}\n"
         )
         if completed_context:
             step_prompt += (
-                f"\n## Completed Steps Context\n"
-                f"These steps have already been done:\n{completed_context}\n"
-                f"\nDo NOT repeat work from completed steps. Focus only on the current step."
+                f"\nCompleted steps are marked [x] above. Do NOT repeat them."
             )
 
         # Execute this step
         executor = executor_factory()
         try:
-            result = await run_agent_capture(executor, step_prompt)
+            result = await run_agent_capture(executor, step_prompt, session)
             if result:
                 step.status = "completed"
                 all_results.append(f"### Step {step.index}: {step.description}\n{result}")
@@ -985,7 +1009,7 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
             if context:
                 prompt = f"{task}\n\n---\nContext from this session:\n{context}"
 
-            plan_content = await run_agent_capture(planner, prompt)
+            plan_content = await run_agent_capture(planner, prompt, session)
 
             if plan_content:
                 session.set_plan(task, plan_content)
@@ -1038,7 +1062,7 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
                 if context:
                     prompt = f"{task}\n\n---\nContext from this session:\n{context}"
 
-                result = await run_agent_capture(executor, prompt)
+                result = await run_agent_capture(executor, prompt, session)
                 if result:
                     session.add_message("user", f"/exec {task}")
                     session.add_message("assistant", f"[Execution]\n{result}")
@@ -1046,11 +1070,13 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
         else:
             agent = create_general_agent(session)
             session.add_message("user", user_input)
-            result = await run_agent_capture(agent, user_input)
+            result = await run_agent_capture(agent, user_input, session)
             if result:
                 session.add_message("assistant", result)
 
-        # Auto-save session after each interaction
+        # Show token usage and auto-save
+        if session.token_summary:
+            console.print(f"[dim]{session.token_summary}[/dim]")
         store.save(session)
 
 

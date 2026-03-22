@@ -14,7 +14,7 @@ You have tools to:
 - Rank files by relevance to a task (rank_files) to know where to start
 - Analyze code structure and dependencies (code_structure, find_dependencies)
 - Run shell commands (for tests, builds, git, etc.)
-- Fetch web pages and APIs (web_fetch)
+- Search the web for information (web_search) and fetch specific pages (web_fetch)
 - Delegate subtasks to sub-agents (delegate_task)
 
 Use delegate_task when you can split work into independent subtasks that benefit from parallel execution. \
@@ -42,7 +42,7 @@ def create_executor(model_id: str = "claude-sonnet-4-5-20250929") -> Agent:
     """Create and return the executor agent."""
     return Agent(
         name="Executor",
-        model=Claude(id=model_id),
+        model=Claude(id=model_id, max_tokens=8192, cache_system_prompt=True),
         tools=ALL_TOOLS,
         instructions=EXECUTOR_INSTRUCTIONS,
         markdown=True,

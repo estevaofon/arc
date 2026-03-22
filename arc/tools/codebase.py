@@ -121,18 +121,19 @@ def _ask_permission(action: str, details: str | Text | Group) -> bool:
         # Resume Live display (now clean — flushed content won't re-render)
         if _live:
             _live.start()
+            _live._live_render._shape = None  # prevent overwriting static Panel
 
         return allowed
 
 
-def read_file(file_path: str, start_line: int = 0, end_line: int = 0, max_size: int = 100_000) -> str:
+def read_file(file_path: str, start_line: int = 0, end_line: int = 0, max_size: int = 30_000) -> str:
     """Read the contents of a file.
 
     Args:
         file_path: Path to the file to read (absolute or relative to working directory).
         start_line: First line to read (1-indexed, inclusive). 0 means from the beginning.
         end_line: Last line to read (1-indexed, inclusive). 0 means to the end.
-        max_size: Maximum file size in bytes before truncation. Defaults to 100KB. Ignored when line range is specified.
+        max_size: Maximum file size in bytes before truncation. Defaults to 30KB. Ignored when line range is specified.
     """
     try:
         # Check if file exists and get size
@@ -410,8 +411,8 @@ def grep_search(pattern: str, directory: str = ".", file_glob: str = "") -> str:
 
     if not results:
         return f"No matches found for pattern: {pattern}"
-    if len(results) > 100:
-        return "\n".join(results[:100]) + f"\n... and {len(results) - 100} more matches"
+    if len(results) > 30:
+        return "\n".join(results[:30]) + f"\n... and {len(results) - 30} more matches (use a more specific pattern to narrow results)"
     return "\n".join(results)
 
 
@@ -499,6 +500,21 @@ def _kill_process_tree(process: subprocess.Popen):
             process.kill()
         except Exception:
             pass
+
+
+_MAX_OUTPUT_CHARS = 10_000
+_TRUNCATE_KEEP = 3_000  # chars to keep from start and end
+
+
+def _truncate_output(text: str) -> str:
+    """Truncate long tool output to save tokens. Keeps start + end with a marker in the middle."""
+    if len(text) <= _MAX_OUTPUT_CHARS:
+        return text
+    return (
+        text[:_TRUNCATE_KEEP]
+        + f"\n\n[...truncated {len(text) - 2 * _TRUNCATE_KEEP:,} chars...]\n\n"
+        + text[-_TRUNCATE_KEEP:]
+    )
 
 
 def _is_long_running(command: str) -> bool:
@@ -594,9 +610,9 @@ def run_command(command: str, timeout: int = 60, working_directory: str = "") ->
 
         parts = []
         if stdout:
-            parts.append(stdout)
+            parts.append(_truncate_output(stdout))
         if stderr:
-            parts.append(f"STDERR:\n{stderr}")
+            parts.append(f"STDERR:\n{_truncate_output(stderr)}")
         if process.returncode != 0:
             parts.append(f"Exit code: {process.returncode}")
 
@@ -763,7 +779,56 @@ def _html_to_text(html_content: str) -> str:
     return parser.get_text()
 
 
-def web_fetch(url: str, max_chars: int = 40000) -> str:
+def web_search(query: str, max_results: int = 5) -> str:
+    """Search the web and return results. Use this to find information about frameworks,
+    libraries, APIs, error messages, or any topic where online knowledge would help.
+
+    Args:
+        query: The search query (e.g. 'agno framework python', 'FastAPI websocket example').
+        max_results: Maximum number of results to return (default 5).
+    """
+    import re as _re
+    import urllib.parse
+
+    encoded = urllib.parse.quote_plus(query)
+    url = f"https://html.duckduckgo.com/html/?q={encoded}"
+
+    try:
+        with httpx.Client(follow_redirects=True, timeout=15) as client:
+            resp = client.get(url, headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            })
+            resp.raise_for_status()
+    except httpx.RequestError as e:
+        return f"Search error: {e}"
+
+    html = resp.text
+    results = []
+
+    # Parse DuckDuckGo HTML results
+    blocks = _re.findall(
+        r'<a[^>]+class="result__a"[^>]*href="([^"]*)"[^>]*>(.*?)</a>.*?'
+        r'<a[^>]+class="result__snippet"[^>]*>(.*?)</a>',
+        html, _re.DOTALL,
+    )
+
+    for i, (link, title, snippet) in enumerate(blocks[:max_results], 1):
+        # Clean HTML tags
+        title_clean = _re.sub(r"<[^>]+>", "", title).strip()
+        snippet_clean = _re.sub(r"<[^>]+>", "", snippet).strip()
+        # DuckDuckGo wraps URLs in a redirect — extract the actual URL
+        actual_url = link
+        ud_match = _re.search(r"uddg=([^&]+)", link)
+        if ud_match:
+            actual_url = urllib.parse.unquote(ud_match.group(1))
+        results.append(f"{i}. {title_clean}\n   {actual_url}\n   {snippet_clean}")
+
+    if not results:
+        return f"No results found for: {query}"
+    return "\n\n".join(results)
+
+
+def web_fetch(url: str, max_chars: int = 15000) -> str:
     """Fetch a URL and return its content as readable text.
 
     Use this to read web pages, GitHub repos/issues/PRs, documentation,
@@ -771,7 +836,7 @@ def web_fetch(url: str, max_chars: int = 40000) -> str:
 
     Args:
         url: The URL to fetch.
-        max_chars: Maximum characters to return (default 40000) to avoid overwhelming context.
+        max_chars: Maximum characters to return (default 15000) to avoid overwhelming context.
     """
     try:
         with httpx.Client(follow_redirects=True, timeout=30) as client:
@@ -829,6 +894,7 @@ _SUBAGENT_TOOLS = [
     grep_search,
     list_directory,
     bash,
+    web_search,
     web_fetch,
     semantic_search,
     code_structure,
@@ -871,7 +937,7 @@ Do not create documentation files unless explicitly asked.
 
     sub = Agent(
         name=f"SubAgent-{agent_id}",
-        model=Claude(id=_model_id),
+        model=Claude(id="claude-haiku-4-5-20251001", max_tokens=4096, cache_system_prompt=True),
         tools=_SUBAGENT_TOOLS,
         instructions=instructions,
         markdown=True,
@@ -897,6 +963,7 @@ ALL_TOOLS = [
     grep_search,
     list_directory,
     bash,
+    web_search,
     web_fetch,
     delegate_task,
     semantic_search,
