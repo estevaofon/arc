@@ -26,6 +26,13 @@ from arc.agents.planner import create_planner
 
 console = Console()
 
+AVAILABLE_MODELS = {
+    "sonnet": "claude-sonnet-4-5-20250929",
+    "opus": "claude-opus-4-20250514",
+    "haiku": "claude-haiku-3-5-20241022",
+}
+DEFAULT_MODEL = "sonnet"
+
 
 def _sanitize_input(text: str) -> str:
     """Remove lone UTF-16 surrogates that Windows clipboard can introduce."""
@@ -40,6 +47,7 @@ A coding agent powered by Claude + Agno.
 **Commands:**
 - `/plan <task>` — Create an implementation plan
 - `/exec [task]` — Execute the current plan, or a specific task
+- `/model [sonnet|opus|haiku]` — Switch model (default: sonnet)
 - `! <command>` — Run a shell command directly
 - `/quit` — Exit
 
@@ -132,6 +140,11 @@ class Session:
         self.history: list[dict[str, str]] = []
         self.current_plan: str | None = None
         self.plan_task: str | None = None
+        self.model_key: str = DEFAULT_MODEL
+
+    @property
+    def model_id(self) -> str:
+        return AVAILABLE_MODELS[self.model_key]
 
     def add_message(self, role: str, content: str):
         self.history.append({"role": role, "content": content})
@@ -163,7 +176,7 @@ def create_general_agent(session: Session):
 
     return Agent(
         name="Arc",
-        model=Claude(id="claude-sonnet-4-5-20250929"),
+        model=Claude(id=session.model_id),
         tools=ALL_TOOLS,
         instructions=GENERAL_INSTRUCTIONS.format(
             cwd=os.getcwd(),
@@ -366,6 +379,7 @@ async def run_cli():
         Text(f"Working directory: {os.getcwd()}", style="dim"),
         border_style="blue",
     ))
+    console.print(f"[dim]Model: [bold]{DEFAULT_MODEL}[/bold] ({AVAILABLE_MODELS[DEFAULT_MODEL]})[/dim]\n")
 
     session = Session()
     planner = None
@@ -379,7 +393,7 @@ async def run_cli():
             user_text = (
                 await asyncio.to_thread(
                     prompt_session.prompt,
-                    HTML("<b><cyan>arc&gt;</cyan></b> "),
+                    HTML(f"<b><cyan>arc</cyan></b> <style fg='ansigray'>({session.model_key})</style><b><cyan>&gt;</cyan></b> "),
                     multiline=False,
                 )
             ).strip()
@@ -405,6 +419,20 @@ async def run_cli():
             console.print("[dim]Bye![/dim]")
             break
 
+        if user_input.startswith("/model"):
+            arg = user_input[6:].strip().lower()
+            if not arg:
+                console.print(f"[bold]Current model:[/bold] {session.model_key} ({session.model_id})")
+                console.print(f"[dim]Available: {', '.join(AVAILABLE_MODELS.keys())}[/dim]")
+            elif arg in AVAILABLE_MODELS:
+                session.model_key = arg
+                planner = None
+                executor = None
+                console.print(f"[bold green]Switched to {arg}[/bold green] ({AVAILABLE_MODELS[arg]})")
+            else:
+                console.print(f"[yellow]Unknown model '{arg}'. Available: {', '.join(AVAILABLE_MODELS.keys())}[/yellow]")
+            continue
+
         if user_input.startswith("! "):
             cmd = user_input[2:].strip()
             if not cmd:
@@ -420,7 +448,7 @@ async def run_cli():
 
             console.print("[bold magenta]Planning...[/bold magenta]")
             if planner is None:
-                planner = create_planner()
+                planner = create_planner(session.model_id)
 
             context = session.get_context_summary()
             prompt = task
@@ -438,7 +466,7 @@ async def run_cli():
                 if ask_yes_no("Execute this plan?"):
                     console.print("[bold green]Executing plan...[/bold green]")
                     if executor is None:
-                        executor = create_executor()
+                        executor = create_executor(session.model_id)
                     exec_prompt = (
                         f"Execute the following plan step by step.\n\n"
                         f"## Task\n{task}\n\n"
@@ -454,7 +482,7 @@ async def run_cli():
             if not task and session.current_plan:
                 console.print(f"[bold green]Executing current plan:[/bold green] [dim]{session.plan_task}[/dim]")
                 if executor is None:
-                    executor = create_executor()
+                    executor = create_executor(session.model_id)
                 exec_prompt = (
                     f"Execute the following plan step by step.\n\n"
                     f"## Task\n{session.plan_task}\n\n"
@@ -469,7 +497,7 @@ async def run_cli():
             else:
                 console.print("[bold green]Executing...[/bold green]")
                 if executor is None:
-                    executor = create_executor()
+                    executor = create_executor(session.model_id)
 
                 context = session.get_context_summary()
                 prompt = task

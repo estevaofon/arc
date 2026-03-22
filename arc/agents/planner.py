@@ -25,11 +25,11 @@ Be concise and actionable. Output the plan in markdown format.
 """
 
 
-def create_planner() -> Agent:
+def create_planner(model_id: str = "claude-sonnet-4-5-20250929") -> Agent:
     """Create and return the planner agent."""
     return Agent(
         name="Planner",
-        model=Claude(id="claude-sonnet-4-5-20250929"),
+        model=Claude(id=model_id),
         tools=[read_file, glob_search, grep_search, list_directory],
         instructions=PLANNER_INSTRUCTIONS,
         markdown=True,

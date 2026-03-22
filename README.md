@@ -1,176 +1,230 @@
 # arc 🤖
 
-Um assistente de codificação inteligente inspirado no Claude Code, construído com agentes Agno e Claude da Anthropic.
+An intelligent coding assistant powered by Claude and Agno agents.
 
-## 📋 Sobre
+## 📋 About
 
-**arc** é um clone do Claude Code que utiliza agentes de IA para auxiliar em tarefas de engenharia de software. O projeto implementa uma arquitetura multi-agente onde diferentes agentes especializados trabalham juntos:
+**arc** is an AI coding assistant that uses multi-agent architecture to help with software engineering tasks. Built with [Agno](https://github.com/agno-agi/agno) and [Anthropic's Claude](https://www.anthropic.com/), it provides an interactive CLI for code manipulation, project analysis, and task automation.
 
-- **Planner** 🧠: Analisa o código e cria planos de implementação detalhados
-- **Executor** ⚡: Executa mudanças no código baseado em planos ou instruções diretas
-- **Arc (General)** 💬: Agente de propósito geral que decide entre planejar ou executar
+### Specialized Agents
 
-## ✨ Funcionalidades
+- **Planner** 🧠 — Analyzes code and creates detailed implementation plans
+- **Executor** ⚡ — Executes code changes based on plans or direct instructions  
+- **Arc (General)** 💬 — General-purpose agent for conversational tasks
 
-- 📁 Leitura, escrita e edição de arquivos
-- 🔍 Busca no código (glob patterns e regex)
-- 🏃 Execução de comandos shell
-- 🗂️ Navegação e análise de estrutura de diretórios
-- 💭 Conversação contextual com histórico
-- 📝 Planejamento de implementações
-- ⚡ Execução automatizada de tarefas
+## ✨ Features
 
-## 🚀 Instalação
+- 📁 **File Operations** — Read, write, edit, and batch file updates
+- 🔍 **Code Search** — Glob patterns and regex search across the codebase
+- 🏃 **Shell Execution** — Run commands directly from the CLI
+- 🗂️ **Directory Navigation** — Browse and analyze project structure
+- 💬 **Smart Conversation** — Context-aware chat with history
+- 📋 **Multi-line Paste** — Paste code blocks with automatic detection
+- 🎯 **Task Planning** — Break down complex tasks into actionable steps
+- ⚡ **Automated Execution** — Execute plans step by step
+- 🔄 **Model Switching** — Toggle between Sonnet, Opus, and Haiku models
 
-### Pré-requisitos
+## 🚀 Installation
 
-- Python 3.13 ou superior
-- Conta na Anthropic com acesso à API
+### Prerequisites
 
-### Passos
+- Python 3.13 or higher
+- Anthropic API key ([get one here](https://console.anthropic.com/))
 
-1. Clone o repositório:
+### Quick Start
+
+1. **Clone and navigate to the repository:**
 ```bash
-git clone <url-do-repositorio>
+git clone <repository-url>
 cd arc
 ```
 
-2. Crie e ative um ambiente virtual (recomendado):
-```bash
-python -m venv .venv
-# Windows
-.venv\Scripts\activate
-# Linux/Mac
-source .venv/bin/activate
-```
-
-3. Instale as dependências:
+2. **Install using pip or uv:**
 ```bash
 pip install -e .
+# or with uv (recommended)
+uv pip install -e .
 ```
 
-4. Configure a chave da API da Anthropic:
+3. **Configure your API key:**
 ```bash
 cp .env.example .env
 ```
 
-Edite o arquivo `.env` e adicione sua chave:
+Edit `.env` and add your Anthropic API key:
 ```
-ANTHROPIC_API_KEY=sk-ant-sua-chave-aqui
+ANTHROPIC_API_KEY=sk-ant-your-key-here
 ```
 
-## 🎮 Uso
+4. **Launch arc:**
+```bash
+arc
+```
 
-### Modo Interativo (CLI)
+## 🎮 Usage
 
-Execute o arc no modo interativo:
+### Interactive CLI
+
+Simply run `arc` to start the interactive session:
 
 ```bash
 arc
 ```
 
-ou
+The CLI supports **multi-line paste detection** — paste code freely, add a comment about it, and press Enter.
 
-```bash
-python main.py
+### Available Commands
+
+| Command | Description |
+|---------|-------------|
+| **Natural language** | Just type normally — arc decides how to help |
+| `/plan <task>` | Create a detailed implementation plan |
+| `/exec [task]` | Execute the current plan or a specific task |
+| `/model [name]` | Switch between models (sonnet, opus, haiku) |
+| `! <command>` | Run a shell command directly |
+| `/quit` or `/exit` | Exit arc |
+
+### Available Models
+
+- **sonnet** (default) — `claude-sonnet-4-5-20250929` — Best balance of speed and capability
+- **opus** — `claude-opus-4-20250514` — Most capable, slower and more expensive
+- **haiku** — `claude-haiku-3-5-20241022` — Fastest and most cost-effective
+
+### Usage Examples
+
+**Planning a feature:**
+```
+arc> /plan create a REST API with FastAPI to manage users with CRUD operations
 ```
 
-### Comandos Disponíveis
+The Planner will:
+1. Analyze your project structure
+2. Search for relevant patterns  
+3. Create a step-by-step implementation plan
+4. Ask if you want to execute it
 
-- **Conversa natural**: Digite normalmente e o arc decidirá como ajudar
-- **`/plan <tarefa>`**: Cria um plano de implementação detalhado
-- **`/exec [tarefa]`**: Executa o plano atual ou uma tarefa específica
-- **`! <comando>`**: Executa um comando shell diretamente
-- **`/quit`** ou **`/exit`**: Sai do arc
-
-### Exemplos de Uso
-
-```
-arc> /plan criar uma API REST com FastAPI para gerenciar usuários
-```
-
-O agente Planner irá:
-1. Analisar a estrutura do projeto
-2. Buscar por padrões relevantes no código
-3. Criar um plano passo-a-passo
-
+**Executing tasks:**
 ```
 arc> /exec
 ```
-
-O agente Executor irá implementar o plano criado.
-
-```
-arc> ! pytest tests/
-```
-
-Executa os testes diretamente no shell.
+Executes the current plan step by step.
 
 ```
-arc> adicione validação de email na função create_user
+arc> /exec add input validation to the create_user endpoint
+```
+Executes a specific task directly.
+
+**Running shell commands:**
+```
+arc> ! pytest tests/ -v
 ```
 
-O agente general irá executar diretamente a tarefa.
+**Switching models:**
+```
+arc> /model opus
+```
 
-## 🏗️ Estrutura do Projeto
+**Natural conversation:**
+```
+arc> refactor the authentication module to use JWT tokens
+```
+
+arc will analyze the request and execute it directly.
+
+**Pasting code:**
+1. Paste a multi-line code block (automatically detected)
+2. Type a message like "optimize this function"
+3. Press Enter
+
+## 🏗️ Project Structure
 
 ```
 arc/
 ├── arc/
-│   ├── agents/          # Agentes especializados
-│   │   ├── planner.py   # Agente de planejamento
-│   │   └── executor.py  # Agente de execução
-│   ├── tools/           # Ferramentas disponíveis para os agentes
-│   │   └── codebase.py  # Ferramentas de manipulação de código
-│   └── cli.py           # Interface de linha de comando
-├── main.py              # Ponto de entrada
-├── pyproject.toml       # Configuração do projeto
-└── README.md
+│   ├── agents/
+│   │   ├── planner.py      # Planning agent
+│   │   └── executor.py     # Execution agent
+│   ├── tools/
+│   │   └── codebase.py     # File and codebase tools
+│   ├── cli.py              # Interactive CLI with streaming
+│   └── __init__.py
+├── main.py                 # Entry point
+├── pyproject.toml          # Project config & dependencies
+├── .env.example            # Environment template
+└── .gitignore
 ```
 
-## 🛠️ Tecnologias
+## 🛠️ Technologies
 
-- **[Agno](https://github.com/agno-agi/agno)**: Framework para construção de agentes de IA
-- **[Anthropic Claude](https://www.anthropic.com/)**: Modelo de linguagem (claude-sonnet-4-5)
-- **[Rich](https://rich.readthedocs.io/)**: Interface de terminal bonita e interativa
-- **SQLAlchemy**: ORM para persistência de dados
-- **python-dotenv**: Gerenciamento de variáveis de ambiente
+- **[Agno](https://github.com/agno-agi/agno)** — Agent framework with tool orchestration
+- **[Anthropic Claude](https://www.anthropic.com/)** — LLM (Sonnet, Opus, Haiku)
+- **[Rich](https://rich.readthedocs.io/)** — Beautiful terminal UI with markdown rendering
+- **[prompt-toolkit](https://python-prompt-toolkit.readthedocs.io/)** — Advanced input with paste detection
+- **[SQLAlchemy](https://www.sqlalchemy.org/)** — ORM for agent state persistence
+- **[python-dotenv](https://pypi.org/project/python-dotenv/)** — Environment variable management
 
-## 🤝 Contribuindo
+## 🔧 Configuration
 
-Contribuições são bem-vindas! Sinta-se à vontade para:
+arc uses the following environment variables:
 
-1. Fazer fork do projeto
-2. Criar uma branch para sua feature (`git checkout -b feature/MinhaFeature`)
-3. Commit suas mudanças (`git commit -m 'Adiciona MinhaFeature'`)
-4. Push para a branch (`git push origin feature/MinhaFeature`)
-5. Abrir um Pull Request
+```bash
+# Required
+ANTHROPIC_API_KEY=sk-ant-...
 
-## 📝 Licença
+# Optional
+DEFAULT_MODEL=sonnet  # sonnet, opus, or haiku
+```
 
-Este projeto é um clone educacional do Claude Code para fins de aprendizado.
+## 💡 Tips & Best Practices
 
-## 🔒 Segurança
+- **Use `/plan` for complex tasks** — Let the Planner break down multi-step work
+- **Use natural language for simple tasks** — The general agent can handle direct edits
+- **Paste code freely** — Multi-line paste is detected automatically
+- **Review plans before execution** — arc will ask for confirmation
+- **Switch models based on needs** — Use Haiku for simple tasks, Opus for complex reasoning
+- **Leverage conversation history** — arc remembers the last 40 messages
+- **Use shell commands** — Run tests, git operations, etc. with `! <command>`
 
-- Nunca compartilhe sua chave da API da Anthropic
-- O arquivo `.env` está no `.gitignore` para evitar commits acidentais
-- Revise os comandos shell antes de executá-los via arc
+## 🔒 Security
 
-## 📚 Recursos Adicionais
+- **Never commit `.env`** — It's already in `.gitignore`
+- **Keep your API key private** — Don't share it or paste it in code
+- **Review shell commands** — arc can execute arbitrary commands
+- **Inspect file changes** — Especially when using `/exec` on unfamiliar code
 
-- [Documentação do Agno](https://docs.agno.dev/)
-- [API da Anthropic](https://docs.anthropic.com/)
-- [Claude Sonnet 4.5 Documentation](https://www.anthropic.com/claude)
+## 🐛 Known Limitations
 
-## 🐛 Problemas Conhecidos
+- Conversation history is limited to 40 messages (10 shown in context)
+- Shell commands execute in the current working directory
+- Large file operations may hit token limits
+- Paste detection requires terminal support for bracketed paste mode
 
-- O histórico da conversa é limitado a 40 mensagens (últimas 10 exibidas no contexto)
-- Comandos shell são executados no diretório de trabalho atual
+## 📚 Learn More
 
-## 📧 Contato
+- [Agno Documentation](https://docs.agno.dev/)
+- [Anthropic API Docs](https://docs.anthropic.com/)
+- [Claude Models Guide](https://www.anthropic.com/claude)
+- [prompt-toolkit Documentation](https://python-prompt-toolkit.readthedocs.io/)
 
-Para dúvidas, sugestões ou problemas, abra uma issue no repositório.
+## 🤝 Contributing
+
+Contributions are welcome! To contribute:
+
+1. Fork the repository
+2. Create a feature branch: `git checkout -b feature/amazing-feature`
+3. Make your changes and test thoroughly
+4. Commit with clear messages: `git commit -m 'Add amazing feature'`
+5. Push to your fork: `git push origin feature/amazing-feature`
+6. Open a Pull Request
+
+## 📄 License
+
+This project is an educational implementation for learning about AI agents and coding assistants.
+
+## 📧 Support
+
+For questions, bug reports, or feature requests, please open an issue in the repository.
 
 ---
 
-Desenvolvido com ❤️ usando Claude e Agno
+Built with ❤️ using Claude and Agno

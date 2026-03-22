@@ -29,11 +29,11 @@ When given a plan, execute it step by step. When given a direct task, figure out
 """
 
 
-def create_executor() -> Agent:
+def create_executor(model_id: str = "claude-sonnet-4-5-20250929") -> Agent:
     """Create and return the executor agent."""
     return Agent(
         name="Executor",
-        model=Claude(id="claude-sonnet-4-5-20250929"),
+        model=Claude(id=model_id),
         tools=ALL_TOOLS,
         instructions=EXECUTOR_INSTRUCTIONS,
         markdown=True,
