@@ -29,6 +29,12 @@ from arc.agents.executor import create_executor
 from arc.agents.planner import create_planner
 from arc.config import AgentConfig, load_config, render_command_template
 
+import io as _io
+
+if sys.platform == "win32":
+    sys.stdout = _io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
+    sys.stderr = _io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8")
+
 console = Console()
 
 AVAILABLE_MODELS = {
@@ -44,32 +50,67 @@ def _sanitize_input(text: str) -> str:
     return text.encode("utf-8", errors="replace").decode("utf-8")
 
 
-WELCOME = """\
-# arc
+TIPS = [
+    "Type naturally — arc decides whether to plan or execute.",
+    "Use /plan to break down complex tasks before executing.",
+    "Place AGENTS.md in project root for custom instructions.",
+    "Use .agents/commands/ and .agents/skills/ for extensions.",
+    "Use ! <command> to run shell commands directly.",
+    "Use /model to switch between sonnet, opus, and haiku.",
+    "Use /sessions to resume previous conversations.",
+]
 
-A coding agent powered by Claude + Agno.
 
-**Commands:**
-- `/plan <task>` — Create an implementation plan
-- `/exec [task]` — Execute the current plan, or a specific task
-- `/model [sonnet|opus|haiku]` — Switch model (default: sonnet)
-- `/sessions` — List recent sessions
-- `/commands` — List custom commands from .agents/commands/
-- `/skills` — List skills from .agents/skills/
-- `! <command>` — Run a shell command directly
-- `/quit` — Exit
+def _render_home(session_model_key: str, skip_permissions: bool) -> None:
+    """Render a clean home screen inspired by Claude Code."""
+    from art import text2art
+    from rich.table import Table
 
-**Config:** Place `AGENTS.md` in project root for custom instructions. \
-Use `.agents/commands/` and `.agents/skills/` for custom commands and skills.
+    art = text2art("ARC").rstrip("\n")
+    logo = Text("\n")
+    for line in art.split("\n"):
+        logo.append("  " + line + "\n", style="bold cyan")
+    console.print(logo)
+    console.print(
+        Text("  A coding agent powered by Claude + Agno", style="dim"),
+    )
+    console.print()
 
-Or just type naturally — arc will decide whether to plan or execute.
-Paste code freely — multi-line paste is detected automatically. Type a message about the paste, then Enter to send.
-"""
+    # Compact command reference
+    cmds = Table(show_header=False, box=None, padding=(0, 2), expand=False)
+    cmds.add_column(style="bold cyan", min_width=12)
+    cmds.add_column(style="dim")
+    cmds.add_row("/help", "Show all commands")
+    cmds.add_row("/plan <task>", "Create an implementation plan")
+    cmds.add_row("/model \\[name]", "Switch model (sonnet, opus, haiku)")
+    cmds.add_row("! <cmd>", "Run a shell command")
+    cmds.add_row("/quit", "Exit")
+    console.print(cmds)
+    console.print()
+
+    # Status line
+    mode_label = "[red]skip permissions[/red]" if skip_permissions else "[green]safe mode[/green]"
+    model_id = AVAILABLE_MODELS[session_model_key]
+    console.print(
+        Text.from_markup(
+            f"  [dim]model:[/dim] [bold]{session_model_key}[/bold] [dim]({model_id})[/dim]"
+            f"  [dim]|[/dim]  {mode_label}"
+        )
+    )
+    console.print(
+        Text.from_markup(f"  [dim]cwd:[/dim]   {os.getcwd()}")
+    )
+    console.print()
+
+    # Random tip
+    tip = random.choice(TIPS)
+    console.print(Text.from_markup(f"  [dim italic]tip: {tip}[/dim italic]"))
+    console.print()
 
 
 SLASH_COMMANDS = [
+    ("/help", "Show help and available commands", "/help"),
     ("/plan", "Create an implementation plan", "/plan <task>"),
-    ("/exec", "Execute the current plan, or a specific task", "/exec [task]"),
     ("/model", "Switch model (sonnet, opus, haiku)", "/model [name]"),
     ("/sessions", "List recent sessions", "/sessions"),
     ("/commands", "List custom commands", "/commands"),
@@ -571,6 +612,34 @@ def run_shell(command: str):
     console.print()
 
 
+def _show_help(config: AgentConfig | None):
+    """Display help with available commands."""
+    from rich.table import Table
+    
+    table = Table(show_header=True, header_style="bold", box=None, padding=(0, 2))
+    table.add_column("Command", style="cyan")
+    table.add_column("Description", style="dim")
+    
+    # Built-in commands
+    table.add_row("/plan <task>", "Create detailed implementation plan")
+    table.add_row("/model [name]", "Switch models (sonnet/opus/haiku)")
+    table.add_row("/sessions", "List recent sessions")
+    table.add_row("/commands", "List custom commands")
+    table.add_row("/skills", "List available skills")
+    table.add_row("/help", "Show this help")
+    table.add_row("/quit", "Exit arc")
+    table.add_row("! <cmd>", "Run shell command")
+    
+    # Custom commands
+    if config and config.commands:
+        table.add_row("", "")  # Separator
+        for name, cmd_def in config.commands.items():
+            table.add_row(f"/{name}", cmd_def.description)
+    
+    console.print(table)
+    console.print()
+
+
 THINKING_PHRASES = [
     "Thinking...",
     "Cooking...",
@@ -960,16 +1029,8 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
         if session.model_key in AVAILABLE_MODELS:
             set_model_id(AVAILABLE_MODELS[session.model_key])
     else:
-        console.print(Markdown(WELCOME))
         session = Session()
-
-    console.print(Panel(
-        Text(f"Working directory: {os.getcwd()}", style="dim"),
-        border_style="blue",
-    ))
-    mode = "[bold red]skip permissions[/bold red]" if skip_permissions else "[bold green]safe mode[/bold green]"
-    model_key = session.model_key
-    console.print(f"[dim]Model: [bold]{model_key}[/bold] ({AVAILABLE_MODELS[model_key]}) | {mode} | Session: [bold]{session.session_id}[/bold][/dim]\n")
+        _render_home(session.model_key, skip_permissions)
 
     planner = None
     executor = None
@@ -1070,6 +1131,10 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
                 console.print(f"\n[dim]Source: .agents/skills/[/dim]")
             continue
 
+        if user_input.lower() == "/help":
+            _show_help(config)
+            continue
+
         if user_input.startswith("! "):
             cmd = user_input[2:].strip()
             if not cmd:
@@ -1113,43 +1178,6 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
                     if result:
                         session.add_message("assistant", f"[Execution]\n{result}")
 
-        elif user_input.startswith("/exec"):
-            task = user_input[5:].strip()
-
-            if not task and session.current_plan:
-                console.print(f"[bold green]Executing current plan:[/bold green] [dim]{session.plan_task}[/dim]")
-
-                # Re-parse steps if needed (e.g., after model switch)
-                if not session.plan_steps:
-                    session.plan_steps = parse_plan_steps(session.current_plan)
-
-                # Reset step statuses for re-execution
-                for step in session.plan_steps:
-                    step.status = "pending"
-
-                def make_executor():
-                    return create_executor(session.model_id, extra_instructions)
-
-                result = await execute_plan_steps(session, make_executor)
-                if result:
-                    session.add_message("user", "/exec (current plan)")
-                    session.add_message("assistant", f"[Execution]\n{result}")
-            elif not task:
-                console.print("[yellow]No active plan. Usage: /exec <task> or /plan first.[/yellow]")
-            else:
-                console.print("[bold green]Executing...[/bold green]")
-
-                executor = create_executor(session.model_id, extra_instructions)
-                context = session.get_context_summary()
-                prompt = task
-                if context:
-                    prompt = f"{task}\n\n---\nContext from this session:\n{context}"
-
-                result = await run_agent_capture(executor, prompt, session)
-                if result:
-                    session.add_message("user", f"/exec {task}")
-                    session.add_message("assistant", f"[Execution]\n{result}")
-
         elif user_input.startswith("/") and not user_input.startswith("//"):
             # Check for custom commands from .agents/commands/
             parts = user_input[1:].split(None, 1)
@@ -1168,7 +1196,7 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
                     session.add_message("assistant", result)
             else:
                 console.print(f"[yellow]Unknown command: /{cmd_name}[/yellow]")
-                console.print(f"[dim]Built-in: /plan, /exec, /model, /sessions, /commands, /skills, /quit[/dim]")
+                console.print(f"[dim]Built-in: /plan, /model, /sessions, /commands, /skills, /quit[/dim]")
                 if config.commands:
                     console.print(f"[dim]Custom: {', '.join(f'/{k}' for k in config.commands)}[/dim]")
 

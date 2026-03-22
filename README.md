@@ -36,7 +36,6 @@ arc
 |---------|-------------|
 | Natural language | Just type — arc handles it |
 | `/plan <task>` | Create detailed implementation plan |
-| `/exec [task]` | Execute plan or specific task |
 | `/model [name]` | Switch models (sonnet/opus/haiku) |
 | `/commands` | List custom commands |
 | `/skills` | List available skills |
@@ -58,7 +57,6 @@ arc --dangerously-skip-permissions     # Skip permission prompts
 
 ```
 arc> /plan create a REST API with FastAPI to manage users
-arc> /exec
 
 arc> refactor the authentication module to use JWT tokens
 
