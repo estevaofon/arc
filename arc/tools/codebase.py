@@ -22,11 +22,17 @@ _live = None       # Reference to the active Rich Live instance
 _permission_lock = threading.Lock()  # Serialize permission prompts
 _allowed_actions: set[str] = set()   # Actions auto-approved via "allow all"
 _display = None    # Reference to the active StreamingDisplay
+_model_id: str = "claude-sonnet-4-5-20250929"  # Current model for sub-agents
 
 
 def set_skip_permissions(value: bool):
     global _skip_permissions
     _skip_permissions = value
+
+
+def set_model_id(model_id: str):
+    global _model_id
+    _model_id = model_id
 
 
 def set_live(live):
@@ -694,6 +700,81 @@ def web_fetch(url: str, max_chars: int = 40000) -> str:
     return text
 
 
+_SUBAGENT_COUNTER = 0
+_SUBAGENT_COUNTER_LOCK = threading.Lock()
+
+
+def _next_subagent_id() -> int:
+    global _SUBAGENT_COUNTER
+    with _SUBAGENT_COUNTER_LOCK:
+        _SUBAGENT_COUNTER += 1
+        return _SUBAGENT_COUNTER
+
+
+# Tools available to sub-agents (no delegate_task to prevent infinite nesting)
+_SUBAGENT_TOOLS = [
+    read_file,
+    write_file,
+    write_files,
+    edit_file,
+    edit_files,
+    glob_search,
+    grep_search,
+    list_directory,
+    bash,
+    web_fetch,
+]
+
+
+def delegate_task(task: str, context: str = "") -> str:
+    """Delegate a task to a sub-agent that runs autonomously and returns the result.
+
+    Use this when you need to:
+    - Research a part of the codebase while continuing other work
+    - Perform an independent subtask (e.g., fix file A while you work on file B)
+    - Explore or gather information without cluttering your own context
+
+    The sub-agent has the same tools as you (read, write, edit, search, bash, web_fetch)
+    but cannot delegate further.
+
+    When the model supports parallel tool calls, multiple delegate_task calls run concurrently.
+
+    Args:
+        task: Clear, specific description of what the sub-agent should do.
+        context: Optional extra context (e.g., relevant file paths, constraints).
+    """
+    from agno.agent import Agent
+    from agno.models.anthropic import Claude
+
+    agent_id = _next_subagent_id()
+    cwd = os.getcwd()
+
+    instructions = f"""\
+You are a sub-agent (#{agent_id}) working on a specific task. Be focused and concise.
+Complete the task and return a clear summary of what you did or found.
+The current working directory is: {cwd}
+Do not create documentation files unless explicitly asked.
+"""
+    if context:
+        instructions += f"\nAdditional context:\n{context}\n"
+
+    sub = Agent(
+        name=f"SubAgent-{agent_id}",
+        model=Claude(id=_model_id),
+        tools=_SUBAGENT_TOOLS,
+        instructions=instructions,
+        markdown=True,
+    )
+
+    try:
+        result = sub.run(task, stream=False)
+        if result and result.content:
+            return f"[SubAgent-{agent_id}] {result.content}"
+        return f"[SubAgent-{agent_id}] Task completed but no output was returned."
+    except Exception as e:
+        return f"[SubAgent-{agent_id}] Error: {e}"
+
+
 # All tools as a list for easy import
 ALL_TOOLS = [
     read_file,
@@ -706,4 +787,5 @@ ALL_TOOLS = [
     list_directory,
     bash,
     web_fetch,
+    delegate_task,
 ]

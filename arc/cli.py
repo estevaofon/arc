@@ -89,6 +89,12 @@ def _create_prompt_session(paste_state: PasteState) -> PromptSession:
         """Escape+Enter inserts a newline for manual multi-line editing."""
         event.current_buffer.insert_text("\n")
 
+    session = PromptSession(
+        key_bindings=bindings,
+        multiline=False,
+        enable_open_in_editor=False,
+    )
+
     @bindings.add(Keys.BracketedPaste)
     def _handle_paste(event):
         """Intercept multi-line pastes: store content and show line count."""
@@ -96,31 +102,26 @@ def _create_prompt_session(paste_state: PasteState) -> PromptSession:
         lines = data.splitlines()
         if len(lines) > 1:
             paste_state.set(data)
-            # Clear the buffer and let user type an annotation
             event.current_buffer.reset()
-        else:
-            # Single-line paste: just insert normally
-            event.current_buffer.insert_text(data)
-
-    def _get_toolbar():
-        if paste_state.pasted_content:
-            return HTML(
+            # Dynamically enable toolbar now that paste exists
+            session.bottom_toolbar = HTML(
                 f'  <b><style bg="ansiblue" fg="ansiwhite"> {paste_state.line_count} lines pasted </style></b>'
                 f'  <i><style fg="ansigray">Type a message about this paste, or press Enter to send as-is</style></i>'
             )
-        return ""
+            event.app.invalidate()
+        else:
+            event.current_buffer.insert_text(data)
 
-    return PromptSession(
-        key_bindings=bindings,
-        multiline=False,
-        enable_open_in_editor=False,
-        bottom_toolbar=_get_toolbar,
-    )
+    return session
 
 GENERAL_INSTRUCTIONS = """\
 You are arc, an AI coding assistant. You help users with software engineering tasks.
 
-You have access to tools for reading, writing, and editing files, searching the codebase, and running shell commands.
+You have access to tools for reading, writing, and editing files, searching the codebase, running shell commands, fetching web content, and delegating subtasks to sub-agents.
+
+Use delegate_task when you can split work into independent subtasks that benefit from parallel execution. \
+For example, researching one part of the codebase while modifying another, or implementing changes in \
+unrelated files simultaneously. You can call delegate_task multiple times in a single response to run sub-agents in parallel.
 
 Be concise and direct. Focus on doing the work, not explaining what you'll do.
 When creating or updating multiple independent files, use write_files to batch them in a single call instead of calling write_file repeatedly.
@@ -477,7 +478,7 @@ def ask_yes_no(prompt: str) -> bool:
 
 async def run_cli(skip_permissions: bool = False):
     """Main REPL loop."""
-    from arc.tools.codebase import set_console, set_skip_permissions, reset_allowed_actions
+    from arc.tools.codebase import set_console, set_model_id, set_skip_permissions, reset_allowed_actions
     set_console(console)
     set_skip_permissions(skip_permissions)
 
@@ -498,6 +499,7 @@ async def run_cli(skip_permissions: bool = False):
     while True:
         try:
             paste_state.clear()
+            prompt_session.bottom_toolbar = None
             user_text = (
                 await asyncio.to_thread(
                     prompt_session.prompt,
@@ -537,6 +539,7 @@ async def run_cli(skip_permissions: bool = False):
                 console.print(f"[dim]Available: {', '.join(AVAILABLE_MODELS.keys())}[/dim]")
             elif arg in AVAILABLE_MODELS:
                 session.model_key = arg
+                set_model_id(session.model_id)
                 planner = None
                 executor = None
                 console.print(f"[bold green]Switched to {arg}[/bold green] ({AVAILABLE_MODELS[arg]})")
