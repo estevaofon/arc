@@ -831,8 +831,12 @@ async def run_agent_capture(agent, message: str, session: "Session | None" = Non
             accumulated = ""
             async for event in agent.arun(run_message, stream=True, stream_events=True):
                 if isinstance(event, ToolCallStartedEvent):
-                    tool_name = event.tool_name if hasattr(event, "tool_name") else "tool"
-                    tool_args = event.tool_args if hasattr(event, "tool_args") else None
+                    if hasattr(event, "tool") and event.tool:
+                        tool_name = event.tool.tool_name or "tool"
+                        tool_args = event.tool.tool_args or None
+                    else:
+                        tool_name = getattr(event, "tool_name", "tool")
+                        tool_args = getattr(event, "tool_args", None)
                     current_tool_label = _format_tool_label(tool_name, tool_args)
                     # Flush any accumulated content before tool runs
                     if accumulated[display._flushed_len:]:
@@ -858,6 +862,24 @@ async def run_agent_capture(agent, message: str, session: "Session | None" = Non
                 elif isinstance(event, RunContentEvent):
                     if hasattr(event, "content") and event.content:
                         accumulated += event.content
+                        unflushed = accumulated[display._flushed_len:]
+                        
+                        # Auto-flush long chunks to prevent rich.Live smearing
+                        if unflushed.count("\n") > 15:
+                            break_point = unflushed.rfind("\n\n")
+                            if break_point == -1:
+                                break_point = unflushed.rfind("\n")
+                                
+                            if break_point != -1:
+                                chunk = unflushed[:break_point + 1]
+                                # Only flush if we are outside of a code block (balanced ```)
+                                if chunk.count("```") % 2 == 0:
+                                    live.stop()
+                                    console.print(Markdown(chunk))
+                                    display._flushed_len += len(chunk)
+                                    live.start()
+                                    live._live_render._shape = None
+
                         display.set_content(accumulated)
                         live.update(display)
 
