@@ -106,6 +106,7 @@ SLASH_COMMANDS = [
     ("/sessions", "List recent sessions", "/sessions"),
     ("/commands", "List custom commands", "/commands"),
     ("/skills", "List available skills", "/skills"),
+    ("/mcp", "List loaded MCP tools", "/mcp"),
     ("/quit", "Exit arc", "/quit"),
 ]
 
@@ -1055,6 +1056,9 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
     paste_state = PasteState()
     prompt_session = _create_prompt_session(paste_state, config)
 
+    from arc.tools.codebase import load_mcp_tools
+    await load_mcp_tools()
+
     while True:
         try:
             paste_state.clear()
@@ -1071,6 +1075,8 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
             console.print(f"\n[dim]Session saved: {session.session_id}[/dim]")
             console.print(f"[dim]Resume with:[/dim] [bold cyan]arc --resume {session.session_id}[/bold cyan]")
             console.print("[dim]Bye![/dim]")
+            from arc.tools.mcp_client import cleanup_mcp
+            await cleanup_mcp()
             break
 
         user_input = _sanitize_input(paste_state.build_message(user_text))
@@ -1095,6 +1101,8 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
             console.print(f"[dim]Session saved: {session.session_id}[/dim]")
             console.print(f"[dim]Resume with:[/dim] [bold cyan]arc --resume {session.session_id}[/bold cyan]")
             console.print("[dim]Bye![/dim]")
+            from arc.tools.mcp_client import cleanup_mcp
+            await cleanup_mcp()
             break
 
         if user_input.startswith("/model"):
@@ -1147,6 +1155,19 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
                 for name, skill in config.skills.items():
                     console.print(f"  [bold cyan]{name}[/bold cyan]  [dim]{skill.description}[/dim]")
                 console.print(f"\n[dim]Source: .agents/skills/[/dim]")
+                console.print(f"\n[dim]Source: .agents/skills/[/dim]")
+            continue
+
+        if user_input.lower() == "/mcp":
+            from arc.tools.codebase import ALL_TOOLS
+            from agno.tools import Function
+            mcp_tools = [t for t in ALL_TOOLS if isinstance(t, Function) and getattr(t, "name", "").count("__") > 0]
+            if not mcp_tools:
+                console.print("[dim]No MCP tools loaded. Check arc.mcp.json config.[/dim]")
+            else:
+                console.print(f"[bold]Loaded MCP Tools ({len(mcp_tools)}):[/bold]\n")
+                for t in mcp_tools:
+                    console.print(f"  [bold cyan]{t.name}[/bold cyan]  [dim]{t.description}[/dim]")
             continue
 
         if user_input.lower() == "/help":

@@ -1029,3 +1029,15 @@ ALL_TOOLS = [
     find_dependencies,
     rank_files,
 ]
+
+async def load_mcp_tools():
+    """Initialize MCP servers and inject their tools into ALL_TOOLS dynamically."""
+    from arc.tools.mcp_client import init_mcp
+    try:
+        mcp_tools = await init_mcp()
+        if mcp_tools:
+            _console.print(f"[dim]Loaded {len(mcp_tools)} tools from MCP servers.[/dim]")
+            for t in mcp_tools:
+                ALL_TOOLS.append(t)
+    except Exception as e:
+        _console.print(f"[dim]Failed to load MCP tools: {e}[/dim]")
