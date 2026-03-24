@@ -3,6 +3,8 @@
 import hashlib
 import json
 import os
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from arc.tools.gitignore import walk_filtered
@@ -36,6 +38,8 @@ _FILENAMES_TO_INDEX = {
 _client: Any = None
 _collection: Any = None
 _index_meta: dict[str, float] = {}
+_index_ready = threading.Event()  # Signals when background index is usable
+_index_lock = threading.Lock()    # Protects concurrent index updates
 
 
 def _get_arc_dir() -> str:
@@ -167,78 +171,95 @@ def _get_indexable_files(root_dir: str) -> list[str]:
     return files
 
 
+def _read_and_chunk(root_dir: str, rel_path: str) -> tuple[str, float, list[dict]] | None:
+    """Read a single file and return its chunks. Thread-safe (no shared state)."""
+    filepath = os.path.join(root_dir, rel_path)
+    try:
+        mtime = os.path.getmtime(filepath)
+        with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+            content = f.read()
+        chunks = _chunk_file(content, rel_path)
+        return (rel_path, mtime, chunks)
+    except OSError:
+        return None
+
+
 def _update_index(root_dir: str):
-    """Incrementally update the codebase index. Only re-indexes changed/new files."""
+    """Incrementally update the codebase index. Only re-indexes changed/new files.
+
+    Uses a thread pool to read and chunk files in parallel (I/O-bound),
+    then upserts to chromadb sequentially (not thread-safe).
+    """
     global _index_meta
 
-    _init_client()
-    _load_meta()
+    with _index_lock:
+        _init_client()
+        _load_meta()
 
-    current_files = _get_indexable_files(root_dir)
-    current_files_set = set(current_files)
+        current_files = _get_indexable_files(root_dir)
+        current_files_set = set(current_files)
 
-    # Find files to add/update
-    to_index = []
-    for rel_path in current_files:
-        filepath = os.path.join(root_dir, rel_path)
-        try:
-            mtime = os.path.getmtime(filepath)
-        except OSError:
-            continue
-        if rel_path not in _index_meta or _index_meta[rel_path] != mtime:
-            to_index.append((rel_path, mtime))
-
-    # Find files to remove (deleted from disk)
-    to_remove = [p for p in _index_meta if p not in current_files_set]
-
-    # Remove deleted files from collection
-    if to_remove:
-        for path in to_remove:
-            # Remove all chunks for this file
-            try:
-                _collection.delete(where={"file_path": path.replace("\\", "/")})
-            except Exception:
-                pass
-            del _index_meta[path]
-
-    # Index new/changed files in batches
-    if to_index:
-        batch_ids = []
-        batch_docs = []
-        batch_metas = []
-
-        for rel_path, mtime in to_index:
+        # Find files to add/update
+        to_index = []
+        for rel_path in current_files:
             filepath = os.path.join(root_dir, rel_path)
             try:
-                with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
-                    content = f.read()
+                mtime = os.path.getmtime(filepath)
             except OSError:
                 continue
+            if rel_path not in _index_meta or _index_meta[rel_path] != mtime:
+                to_index.append(rel_path)
 
-            # Remove old chunks for this file before re-indexing
-            try:
-                _collection.delete(where={"file_path": rel_path.replace("\\", "/")})
-            except Exception:
-                pass
+        # Find files to remove (deleted from disk)
+        to_remove = [p for p in _index_meta if p not in current_files_set]
 
-            chunks = _chunk_file(content, rel_path)
-            for chunk in chunks:
-                batch_ids.append(chunk["id"])
-                batch_docs.append(chunk["document"])
-                batch_metas.append(chunk["metadata"])
+        # Remove deleted files from collection
+        if to_remove:
+            for path in to_remove:
+                try:
+                    _collection.delete(where={"file_path": path.replace("\\", "/")})
+                except Exception:
+                    pass
+                del _index_meta[path]
 
-            _index_meta[rel_path] = mtime
+        # Read and chunk files in parallel
+        if to_index:
+            batch_ids = []
+            batch_docs = []
+            batch_metas = []
 
-            # Upsert in batches of 100
-            if len(batch_ids) >= 100:
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                results = pool.map(lambda p: _read_and_chunk(root_dir, p), to_index)
+
+            for result in results:
+                if result is None:
+                    continue
+                rel_path, mtime, chunks = result
+
+                # Remove old chunks before re-indexing
+                try:
+                    _collection.delete(where={"file_path": rel_path.replace("\\", "/")})
+                except Exception:
+                    pass
+
+                for chunk in chunks:
+                    batch_ids.append(chunk["id"])
+                    batch_docs.append(chunk["document"])
+                    batch_metas.append(chunk["metadata"])
+
+                _index_meta[rel_path] = mtime
+
+                # Upsert in batches of 100
+                if len(batch_ids) >= 100:
+                    _collection.upsert(ids=batch_ids, documents=batch_docs, metadatas=batch_metas)
+                    batch_ids, batch_docs, batch_metas = [], [], []
+
+            # Flush remaining
+            if batch_ids:
                 _collection.upsert(ids=batch_ids, documents=batch_docs, metadatas=batch_metas)
-                batch_ids, batch_docs, batch_metas = [], [], []
 
-        # Flush remaining
-        if batch_ids:
-            _collection.upsert(ids=batch_ids, documents=batch_docs, metadatas=batch_metas)
-
-    _save_meta()
+        _save_meta()
+        _index_ready.set()  # Signal that the index is usable
 
 
 def semantic_search(query: str, top_k: int = 10, file_glob: str = "") -> str:
@@ -265,7 +286,12 @@ def semantic_search(query: str, top_k: int = 10, file_glob: str = "") -> str:
 
     try:
         root_dir = os.getcwd()
-        _update_index(root_dir)
+        # Wait for background warm-up if running, otherwise update inline
+        if not _index_ready.is_set():
+            _update_index(root_dir)
+        else:
+            # Incremental update for any files changed since last warm-up
+            _update_index(root_dir)
 
         # Build query parameters
         query_params: dict[str, Any] = {
@@ -330,3 +356,21 @@ def semantic_search(query: str, top_k: int = 10, file_glob: str = "") -> str:
 
     except Exception as e:
         return f"Error during semantic search: {e}"
+
+
+def warm_up_index():
+    """Run index update in a background thread. Non-blocking.
+
+    Call once at startup; semantic_search will wait for completion if needed.
+    """
+    if _index_ready.is_set():
+        return  # Already warmed up
+
+    def _bg():
+        try:
+            _update_index(os.getcwd())
+        except Exception:
+            _index_ready.set()  # Unblock waiters even on failure
+
+    thread = threading.Thread(target=_bg, daemon=True)
+    thread.start()

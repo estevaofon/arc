@@ -14,3 +14,5 @@ wheels/
 
 # Arc data
 .arc/
+.claude/
+.coverage

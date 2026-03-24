@@ -19,7 +19,7 @@ class McpSessionManager:
         self.sessions: dict[str, ClientSession] = {}
         
     async def initialize(self):
-        """Read config and spawn all MCP servers."""
+        """Read config and spawn all MCP servers concurrently."""
         if not os.path.exists(self.config_path):
             return
 
@@ -31,48 +31,56 @@ class McpSessionManager:
                 return
 
         servers = config.get("mcpServers", {})
+        tasks = []
         for name, svr_config in servers.items():
             cmd = svr_config.get("command")
-            args = svr_config.get("args", [])
-            env = svr_config.get("env", None)
-            
             if not cmd:
                 continue
-                
-            # Prepare standard IO parameters
-            server_params = StdioServerParameters(
-                command=cmd,
-                args=args,
-                env={**os.environ.copy(), **env} if env else None
+            tasks.append(self._start_server(name, svr_config))
+
+        if tasks:
+            await asyncio.gather(*tasks)
+
+    async def _start_server(self, name: str, svr_config: dict):
+        """Start a single MCP server and register its session."""
+        cmd = svr_config.get("command")
+        args = svr_config.get("args", [])
+        env = svr_config.get("env", None)
+
+        server_params = StdioServerParameters(
+            command=cmd,
+            args=args,
+            env={**os.environ.copy(), **env} if env else None
+        )
+
+        try:
+            read_stream, write_stream = await self._exit_stack.enter_async_context(
+                stdio_client(server_params)
             )
-            
-            try:
-                # Enter the client context and keep it alive in the exit stack
-                read_stream, write_stream = await self._exit_stack.enter_async_context(
-                    stdio_client(server_params)
-                )
-                session = await self._exit_stack.enter_async_context(
-                    ClientSession(read_stream, write_stream)
-                )
-                
-                await session.initialize()
-                self.sessions[name] = session
-            except Exception as e:
-                print(f"[Warning] Failed to start MCP server '{name}': {e}")
+            session = await self._exit_stack.enter_async_context(
+                ClientSession(read_stream, write_stream)
+            )
+
+            await session.initialize()
+            self.sessions[name] = session
+        except Exception as e:
+            print(f"[Warning] Failed to start MCP server '{name}': {e}")
 
     async def get_tools(self) -> list[Function]:
-        """Fetch all tools from connected servers and convert to Agno Functions."""
-        generated_tools = []
-        
-        for server_name, session in self.sessions.items():
+        """Fetch all tools from connected servers concurrently and convert to Agno Functions."""
+
+        async def _fetch(server_name: str, session: ClientSession) -> list[Function]:
             try:
                 result = await session.list_tools()
-                for tool in result.tools:
-                    generated_tools.append(self._create_agno_function(server_name, session, tool))
+                return [self._create_agno_function(server_name, session, tool) for tool in result.tools]
             except Exception as e:
                 print(f"[Warning] Failed to fetch tools from MCP server '{server_name}': {e}")
-                
-        return generated_tools
+                return []
+
+        results = await asyncio.gather(
+            *[_fetch(name, sess) for name, sess in self.sessions.items()]
+        )
+        return [tool for tools in results for tool in tools]
 
     def _create_agno_function(self, server_name: str, session: ClientSession, tool) -> Function:
         """Dynamically create an Agno Function that routes to the remote MCP tool."""

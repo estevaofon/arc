@@ -853,28 +853,58 @@ def _format_tool_label(tool_name: str, tool_args: dict | None) -> str:
     return display
 
 
-class StreamingDisplay:
-    """Shows only un-flushed streaming content + status bar.
+class ToolTracker:
+    """Tracks active tool calls with timing, displayed inside the Live area."""
 
-    Tool activity is printed as static output (above Live), not inside Live.
-    When a permission prompt pauses Live, flush() is called to mark current
-    content as already printed — so Live doesn't re-render it when it resumes.
+    def __init__(self):
+        self._active: dict[str, tuple[str, float]] = {}  # id -> (label, start_time)
+        self._completed: list[tuple[str, float]] = []      # (label, duration)
+
+    def start(self, tool_id: str, label: str):
+        self._active[tool_id] = (label, time.monotonic())
+
+    def complete(self, tool_id: str) -> tuple[str, float] | None:
+        entry = self._active.pop(tool_id, None)
+        if entry:
+            label, start = entry
+            duration = time.monotonic() - start
+            self._completed.append((label, duration))
+            return label, duration
+        return None
+
+    @property
+    def active_labels(self) -> list[tuple[str, float]]:
+        """Return (label, elapsed_seconds) for each active tool."""
+        now = time.monotonic()
+        return [(label, now - start) for label, start in self._active.values()]
+
+    def pop_completed(self) -> list[tuple[str, float]]:
+        """Drain and return completed tools since last call."""
+        items = self._completed[:]
+        self._completed.clear()
+        return items
+
+
+class StreamingDisplay:
+    """Shows un-flushed streaming content + active tool indicators + status bar.
+
+    Active tools are rendered inline (inside Live) so they're always visible.
+    Completed tools are flushed as static output above Live.
     """
 
     def __init__(self, status_bar: StatusBar):
         self.status_bar = status_bar
-        self._flushed_len: int = 0       # how much of accumulated was already printed
-        self._accumulated: str = ""       # full accumulated content
+        self.tool_tracker = ToolTracker()
+        self._flushed_len: int = 0
+        self._accumulated: str = ""
         self._content: Markdown | None = None
 
     def set_content(self, accumulated: str):
-        """Update with the full accumulated content; only the un-flushed part is displayed."""
         self._accumulated = accumulated
         delta = accumulated[self._flushed_len:]
         self.content = Markdown(delta) if delta else None
 
     def flush(self):
-        """Print current un-flushed content statically and mark it as flushed."""
         delta = self._accumulated[self._flushed_len:]
         if delta:
             console.print(Markdown(delta))
@@ -893,6 +923,21 @@ class StreamingDisplay:
         if self._content is not None:
             yield self._content
             yield Text()
+
+        # Render active tools with spinner and elapsed time
+        active = self.tool_tracker.active_labels
+        if active:
+            for label, elapsed in active:
+                elapsed_str = f"{elapsed:.1f}s" if elapsed >= 1.0 else ""
+                tool_line = Text.assemble(
+                    ("  ", ""),
+                    ("↻ ", "bold cyan"),
+                    (label, "bold"),
+                    (f"  {elapsed_str}" if elapsed_str else "", "dim"),
+                )
+                yield tool_line
+            yield Text()
+
         yield self.status_bar
 
     def __rich_measure__(self, rconsole: Console, options: ConsoleOptions) -> Measurement:
@@ -916,14 +961,14 @@ async def run_agent_capture(agent, message: str, session: "Session | None" = Non
 
         status = StatusBar(interval=3.0)
         display = StreamingDisplay(status)
-        current_tool_label: str | None = None
+        tracker = display.tool_tracker
 
         run_output = None
         with Live(display, console=console, refresh_per_second=10) as live:
             set_live(live)
             set_display(display)
             accumulated = ""
-            async for event in agent.arun(message, stream=True, yield_run_output=True):
+            async for event in agent.arun(message, stream=True, stream_events=True, yield_run_output=True):
                 if isinstance(event, RunOutput):
                     run_output = event
                     break
@@ -932,42 +977,53 @@ async def run_agent_capture(agent, message: str, session: "Session | None" = Non
                     if hasattr(event, "tool") and event.tool:
                         tool_name = event.tool.tool_name or "tool"
                         tool_args = event.tool.tool_args or None
+                        tool_id = getattr(event.tool, "tool_call_id", None) or tool_name
                     else:
                         tool_name = getattr(event, "tool_name", "tool")
                         tool_args = getattr(event, "tool_args", None)
-                    current_tool_label = _format_tool_label(tool_name, tool_args)
+                        tool_id = getattr(event, "tool_call_id", None) or tool_name
+                    label = _format_tool_label(tool_name, tool_args)
                     # Flush any accumulated content before tool runs
                     if accumulated[display._flushed_len:]:
                         live.stop()
                         display.flush()
                         live.start()
-                        live._live_render._shape = None  # prevent overwriting flushed content
-                    status.set_text(f"{current_tool_label}...")
+                        live._live_render._shape = None
+                    tracker.start(tool_id, label)
+                    status.set_text(f"{label}...")
                     live.update(display)
 
                 elif isinstance(event, ToolCallCompletedEvent):
-                    if current_tool_label:
-                        # Print completed tool as static output above Live
+                    if hasattr(event, "tool") and event.tool:
+                        tool_id = getattr(event.tool, "tool_call_id", None) or getattr(event.tool, "tool_name", "tool")
+                    else:
+                        tool_id = getattr(event, "tool_call_id", None) or getattr(event, "tool_name", "tool")
+
+                    result = tracker.complete(tool_id)
+                    # Flush completed tools as static output above Live
+                    for label, duration in tracker.pop_completed():
+                        dur_str = f" {duration:.1f}s" if duration >= 0.5 else ""
                         live.console.print(Text.assemble(
                             ("  ", ""),
                             ("\u2713 ", "bold green"),
-                            (current_tool_label, "dim"),
+                            (label, "dim"),
+                            (dur_str, "dim cyan"),
                         ))
-                        current_tool_label = None
-                    status.resume_cycling()
+                    if not tracker.active_labels:
+                        status.resume_cycling()
                     live.update(display)
 
                 elif isinstance(event, RunContentEvent):
                     if hasattr(event, "content") and event.content:
                         accumulated += event.content
                         unflushed = accumulated[display._flushed_len:]
-                        
+
                         # Auto-flush long chunks to prevent rich.Live smearing
                         if unflushed.count("\n") > 15:
                             break_point = unflushed.rfind("\n\n")
                             if break_point == -1:
                                 break_point = unflushed.rfind("\n")
-                                
+
                             if break_point != -1:
                                 chunk = unflushed[:break_point + 1]
                                 # Only flush if we are outside of a code block (balanced ```)
@@ -1147,8 +1203,17 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
     paste_state = PasteState()
     prompt_session = _create_prompt_session(paste_state, config)
 
+    # Parallel startup: MCP tools + background index warm-up
     from arc.tools.codebase import load_mcp_tools
-    await load_mcp_tools()
+    from arc.tools.indexer import warm_up_index
+
+    async def _startup_mcp():
+        await load_mcp_tools()
+
+    async def _startup_index():
+        await asyncio.to_thread(warm_up_index)
+
+    await asyncio.gather(_startup_mcp(), _startup_index())
 
     while True:
         try:

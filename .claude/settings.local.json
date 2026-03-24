@@ -19,7 +19,9 @@
       "Bash(python -c \"from agno.models.anthropic import Claude; help\\(Claude.__init__\\)\")",
       "Bash(ls:*)",
       "Bash(python:*)",
-      "Bash(python -c \":*)"
+      "Bash(python -c \":*)",
+      "Bash(grep -B 20 execute_plan_steps.*make_executor D:OneDriveDocumentospython_projectsarcarccli.py)",
+      "Bash(grep -E \"^d|\\\\.py$\")"
     ]
   }
 }
