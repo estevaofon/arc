@@ -1,152 +1,184 @@
 # arc
 
-An intelligent coding assistant powered by Claude and Agno agents.
+Um assistente de codificação inteligente powered by Claude e Agno agents.
 
-## Highlights
+## Destaques
 
-- **Multi-Agent Architecture** — Specialized agents for planning, execution, and conversation
-- **Interactive CLI** — Streaming responses, multi-line paste, session management
-- **16 Integrated Tools** — File ops, code search, shell, web search, semantic search, task delegation
-- **Task Planning** — Break down complex tasks into steps with automatic execution
-- **Model Flexibility** — Switch between Sonnet (balanced), Opus (powerful), and Haiku (fast)
-- **Semantic Search** — Embedding-based code search with chromadb
-- **Custom Commands & Skills** — Extend arc via `.agents/` directory
+- **Arquitetura Multi-Agente** — Agentes especializados para planejamento, execução e conversação
+- **CLI Interativa** — Respostas em streaming, paste multi-linha, gerenciamento de sessões
+- **16 Ferramentas Integradas** — Operações de arquivo, busca de código, shell, busca web, busca semântica, delegação de tarefas
+- **Planejamento de Tarefas** — Quebra de tarefas complexas em etapas com execução automática
+- **Flexibilidade de Modelos** — Alterne entre Sonnet (balanceado), Opus (poderoso) e Haiku (rápido)
+- **Busca Semântica** — Busca de código baseada em embeddings com chromadb
+- **Comandos e Skills Personalizados** — Estenda arc via diretório `.agents/`
+- **Suporte MCP** — Integração com Model Context Protocol servers
 
-## Quick Start
+## Início Rápido
 
 ```bash
-# Install
+# Instalar
 pip install -e .
 
-# Configure
+# Configurar
 cp .env.example .env
-# Edit .env and add: ANTHROPIC_API_KEY=sk-ant-your-key-here
+# Edite .env e adicione: ANTHROPIC_API_KEY=sk-ant-sua-chave-aqui
 
-# Run
+# Executar
 arc
 ```
 
-**Requirements:** Python 3.13+ and an [Anthropic API key](https://console.anthropic.com/)
+**Requisitos:** Python 3.13+ e uma [chave de API da Anthropic](https://console.anthropic.com/)
 
-## Usage
+## Uso
 
-### Commands
+### Comandos
 
-| Command | Description |
-|---------|-------------|
-| Natural language | Just type — arc handles it |
-| `/plan <task>` | Create detailed implementation plan |
-| `/model [name]` | Switch models (sonnet/opus/haiku) |
-| `/commands` | List custom commands |
-| `/skills` | List available skills |
-| `/sessions` | List recent sessions |
-| `! <command>` | Run shell commands |
-| `/quit` or `/exit` | Exit arc |
+| Comando | Descrição |
+|---------|-----------|
+| Linguagem natural | Apenas digite — arc cuida do resto |
+| `/plan <tarefa>` | Cria plano de implementação detalhado |
+| `/model [nome]` | Alterna modelos (sonnet/opus/haiku) |
+| `/mcp` | Lista servidores e ferramentas MCP disponíveis |
+| `/commands` | Lista comandos personalizados |
+| `/skills` | Lista skills disponíveis |
+| `/sessions` | Lista sessões recentes |
+| `/help` | Mostra todos os comandos |
+| `! <comando>` | Executa comandos shell |
+| `/quit` ou `/exit` | Sai do arc |
 
-### CLI Options
+### Opções CLI
 
 ```bash
-arc                                    # Start new session
-arc --resume <id>                      # Resume session
-arc --resume last                      # Resume last session
-arc --list                             # List sessions
-arc --dangerously-skip-permissions     # Skip permission prompts
+arc                                    # Inicia nova sessão
+arc --resume <id>                      # Retoma sessão
+arc --resume last                      # Retoma última sessão
+arc --list                             # Lista sessões
+arc --dangerously-skip-permissions     # Pula prompts de permissão
 ```
 
-### Examples
+### Exemplos
 
 ```
-arc> /plan create a REST API with FastAPI to manage users
+arc> /plan criar uma REST API com FastAPI para gerenciar usuários
 
-arc> refactor the authentication module to use JWT tokens
+arc> refatorar o módulo de autenticação para usar tokens JWT
 
 arc> ! pytest tests/ -v
 
 arc> /model opus
 ```
 
-## Agents
+## Agentes
 
-| Agent | Role | Tools |
-|-------|------|-------|
-| **Planner** | Analyzes codebase, creates structured implementation plans | Read-only tools, search, web |
-| **Executor** | Implements code changes based on plans or instructions | All tools including delegation |
-| **General** | Handles conversation and simple operations | All tools including delegation |
+| Agente | Papel | Ferramentas |
+|--------|-------|-------------|
+| **Planner** | Analisa codebase, cria planos de implementação estruturados | Ferramentas somente leitura, busca, web |
+| **Executor** | Implementa mudanças de código baseadas em planos ou instruções | Todas as ferramentas incluindo delegação |
+| **General** | Lida com conversação e operações simples | Todas as ferramentas incluindo delegação |
 
-## Tools
+## Ferramentas
 
-### File Operations
-- `read_file` — Read files with line-range support and binary detection
-- `write_file` / `write_files` — Write single or batch files
-- `edit_file` / `edit_files` — Find-replace edits across files
+### Operações de Arquivo
+- `read_file` — Lê arquivos com suporte a range de linhas e detecção binária
+- `write_file` / `write_files` — Escreve arquivos únicos ou em lote
+- `edit_file` / `edit_files` — Edições find-replace em múltiplos arquivos
 
-### Search & Discovery
-- `glob_search` — Find files by pattern (respects .gitignore)
-- `grep_search` — Regex content search with file filtering
-- `list_directory` — Directory listing with gitignore filtering
-- `semantic_search` — Natural language concept search via chromadb embeddings
-- `rank_files` — Multi-factor file relevance ranking (semantic, name, structure, recency)
+### Busca & Descoberta
+- `glob_search` — Encontra arquivos por padrão (respeita .gitignore)
+- `grep_search` — Busca de conteúdo com regex e filtro de arquivos
+- `list_directory` — Listagem de diretório com filtro gitignore
+- `semantic_search` — Busca conceitual em linguagem natural via embeddings chromadb
+- `rank_files` — Ranking de relevância de arquivos multi-fator (semântico, nome, estrutura, recência)
 
-### Code Analysis
-- `code_structure` — Extract classes, functions, imports via tree-sitter AST
-- `find_dependencies` — Analyze import relationships between files
+### Análise de Código
+- `code_structure` — Extrai classes, funções, imports via AST tree-sitter
+- `find_dependencies` — Analisa relacionamentos de imports entre arquivos
 
 ### Shell & Web
-- `bash` / `run_command` — Execute shell commands with permission gates
-- `web_search` — Search the web via DuckDuckGo
-- `web_fetch` — Fetch URLs and convert HTML to readable text
+- `bash` — Executa comandos shell com gates de permissão
+- `web_search` — Busca na web via DuckDuckGo
+- `web_fetch` — Busca URLs e converte HTML para texto legível
 
-### Advanced
-- `delegate_task` — Spawn autonomous sub-agents for parallel task execution
+### Avançado
+- `delegate_task` — Gera sub-agentes autônomos para execução paralela de tarefas
 
-## Configuration
+## Configuração
 
-Arc supports project-level configuration through:
+Arc suporta configuração a nível de projeto através de:
 
 ### AGENTS.md
-Place an `AGENTS.md` file in your project root with custom instructions that get appended to all agent system prompts.
+Coloque um arquivo `AGENTS.md` na raiz do seu projeto com instruções personalizadas que serão anexadas a todos os prompts do sistema dos agentes.
 
-### .agents/ Directory
+### Diretório .agents/
 
 ```
 .agents/
-├── commands/       # Custom slash commands (filename = command name)
-│   └── deploy.md   # Usage: /deploy <args>
-└── skills/         # Custom skills/personas
-    └── review.md   # Loaded as additional agent instructions
+├── commands/       # Comandos slash personalizados (nome do arquivo = nome do comando)
+│   └── deploy.md   # Uso: /deploy <args>
+└── skills/         # Skills/personas personalizadas
+    └── review.md   # Carregado como instruções adicionais do agente
 ```
 
-Command files support frontmatter with `description` and the `$INPUT` template variable for arguments.
+Arquivos de comando suportam frontmatter com `description` e a variável template `$INPUT` para argumentos.
 
-## Architecture
+### Suporte MCP (Model Context Protocol)
+
+Arc pode carregar ferramentas de servidores MCP. Configure em `.arc/mcp_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/caminho/permitido"]
+    }
+  }
+}
+```
+
+## Arquitetura
 
 ```
 arc/
 ├── arc/
-│   ├── cli.py              # Interactive CLI with streaming display
-│   ├── config.py           # Configuration loader (AGENTS.md, .agents/)
+│   ├── cli.py              # CLI interativa com display em streaming (1306 LOC)
+│   ├── config.py           # Carregador de configuração (AGENTS.md, .agents/)
 │   ├── agents/
-│   │   ├── planner.py      # Planning agent
-│   │   └── executor.py     # Execution agent
+│   │   ├── planner.py      # Agente de planejamento (60 LOC)
+│   │   └── executor.py     # Agente de execução (57 LOC)
 │   └── tools/
-│       ├── codebase.py     # 16 core tools
-│       ├── ast_tools.py    # Tree-sitter code analysis
-│       ├── indexer.py      # Chromadb semantic indexing
-│       ├── ranker.py       # File relevance ranking
-│       └── gitignore.py    # Gitignore-aware filtering
-├── .arc/                   # Local data (sessions, index, embeddings)
+│       ├── codebase.py     # 16 ferramentas principais (1043 LOC)
+│       ├── ast_tools.py    # Análise de código tree-sitter (402 LOC)
+│       ├── indexer.py      # Indexação semântica chromadb (332 LOC)
+│       ├── ranker.py       # Ranking de relevância de arquivos (280 LOC)
+│       ├── mcp_client.py   # Cliente MCP (145 LOC)
+│       └── gitignore.py    # Filtro gitignore-aware (104 LOC)
+├── .arc/                   # Dados locais (sessões, índice, embeddings)
 └── pyproject.toml
 ```
 
-## Built With
+## Construído Com
 
-- **[Agno](https://github.com/agno-agi/agno)** — Agent framework with tool orchestration
+- **[Agno](https://github.com/agno-agi/agno)** — Framework de agentes com orquestração de ferramentas
 - **[Anthropic Claude](https://www.anthropic.com/)** — Sonnet 4.5, Opus 4, Haiku 3.5
-- **[chromadb](https://www.trychroma.com/)** — Semantic search embeddings
-- **[tree-sitter](https://tree-sitter.github.io/)** — AST-based code analysis
-- **[Rich](https://rich.readthedocs.io/)** — Terminal UI
-- **[prompt-toolkit](https://python-prompt-toolkit.readthedocs.io/)** — Advanced input handling
+- **[chromadb](https://www.trychroma.com/)** — Embeddings de busca semântica
+- **[tree-sitter](https://tree-sitter.github.io/)** — Análise de código baseada em AST
+- **[Rich](https://rich.readthedocs.io/)** — UI de terminal
+- **[prompt-toolkit](https://python-prompt-toolkit.readthedocs.io/)** — Manipulação avançada de input
+
+## Desenvolvimento
+
+```bash
+# Instalar com dependências de desenvolvimento
+pip install -e ".[dev]"
+
+# Executar testes
+pytest
+
+# Executar testes com cobertura
+pytest --cov=arc --cov-report=html
+```
 
 ---
 
-Built with Claude and Agno
+Construído com Claude e Agno

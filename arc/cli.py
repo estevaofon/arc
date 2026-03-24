@@ -146,6 +146,7 @@ SLASH_COMMANDS = [
     ("/sessions", "List recent sessions", "/sessions"),
     ("/commands", "List custom commands", "/commands"),
     ("/skills", "List available skills", "/skills"),
+    ("/mcp", "List loaded MCP tools", "/mcp"),
     ("/quit", "Exit arc", "/quit"),
 ]
 
@@ -344,14 +345,8 @@ When creating or updating multiple independent files, use write_files to batch t
 When making independent edits across files, use edit_files to batch them in a single call instead of calling edit_file repeatedly.
 ALWAYS read the project's README.md first if it exists to understand the project context.
 NEVER create documentation files (*.md) unless the user explicitly asks for them. This includes README.md, CHANGELOG.md, CONTRIBUTING.md, SETUP.md, and any other markdown files. A single README.md with basic usage is acceptable only when creating a new project from scratch — nothing more. Focus on writing working code, not documentation.
-The current working directory is: {cwd}
-
-## Environment Context
-{env_context}
 
 {extra_instructions}
-
-{context}
 """
 
 
@@ -444,9 +439,10 @@ class Session:
         self.cwd: str = os.getcwd()
         self.created_at: str = time.strftime("%Y-%m-%d %H:%M:%S")
         self.updated_at: str = self.created_at
-        # Token usage tracking
         self.total_input_tokens: int = 0
         self.total_output_tokens: int = 0
+        self.total_cache_read_tokens: int = 0
+        self.total_cache_write_tokens: int = 0
         self.api_calls: int = 0
 
     @property
@@ -482,6 +478,8 @@ class Session:
             return
         self.total_input_tokens += getattr(metrics, "input_tokens", 0) or 0
         self.total_output_tokens += getattr(metrics, "output_tokens", 0) or 0
+        self.total_cache_read_tokens += getattr(metrics, "cache_read_tokens", 0) or 0
+        self.total_cache_write_tokens += getattr(metrics, "cache_write_tokens", 0) or 0
         self.api_calls += 1
 
     @property
@@ -489,7 +487,10 @@ class Session:
         total = self.total_input_tokens + self.total_output_tokens
         if total == 0:
             return ""
-        return f"tokens: {total:,} (in: {self.total_input_tokens:,} / out: {self.total_output_tokens:,}) | calls: {self.api_calls}"
+        metrics_str = f"in: {self.total_input_tokens:,} / out: {self.total_output_tokens:,}"
+        if self.total_cache_read_tokens > 0:
+            metrics_str += f" / cached: {self.total_cache_read_tokens:,}"
+        return f"tokens: {total:,} ({metrics_str}) | calls: {self.api_calls}"
 
     def add_message(self, role: str, content: str):
         self.history.append({"role": role, "content": content})
@@ -655,28 +656,6 @@ def create_general_agent(session: Session, config: AgentConfig | None = None):
 
     from arc.tools.codebase import ALL_TOOLS
 
-    # Gather quick environment context
-    env_context_parts = []
-    try:
-        import subprocess
-        import os
-        from arc.tools.codebase import get_project_tree
-        
-        cwd = os.getcwd()
-        
-        # Inject fast project tree
-        tree_text = get_project_tree(cwd, max_depth=3)
-        if tree_text:
-            env_context_parts.append(f"Directory Tree (max depth 3):\n```text\n{tree_text}\n```")
-            
-        git_status = subprocess.run(["git", "status", "-s"], capture_output=True, text=True, cwd=cwd, timeout=2).stdout.strip()
-        if git_status:
-            env_context_parts.append("Git status (modified/untracked):\n" + git_status)
-    except Exception:
-        pass
-        
-    env_context = "\n\n".join(env_context_parts) if env_context_parts else "No additional environment context."
-
     extra = config.get_extra_instructions() if config else ""
 
     return Agent(
@@ -684,10 +663,7 @@ def create_general_agent(session: Session, config: AgentConfig | None = None):
         model=Claude(id=session.model_id, max_tokens=8192, cache_system_prompt=True),
         tools=ALL_TOOLS,
         instructions=GENERAL_INSTRUCTIONS.format(
-            cwd=os.getcwd(),
-            env_context=env_context,
             extra_instructions=extra,
-            context=session.get_context_summary(),
         ),
         markdown=True,
     )
@@ -953,8 +929,12 @@ async def run_agent_capture(agent, message: str, session: "Session | None" = Non
                     break
 
                 if isinstance(event, ToolCallStartedEvent):
-                    tool_name = event.tool_name if hasattr(event, "tool_name") else "tool"
-                    tool_args = event.tool_args if hasattr(event, "tool_args") else None
+                    if hasattr(event, "tool") and event.tool:
+                        tool_name = event.tool.tool_name or "tool"
+                        tool_args = event.tool.tool_args or None
+                    else:
+                        tool_name = getattr(event, "tool_name", "tool")
+                        tool_args = getattr(event, "tool_args", None)
                     current_tool_label = _format_tool_label(tool_name, tool_args)
                     # Flush any accumulated content before tool runs
                     if accumulated[display._flushed_len:]:
@@ -980,6 +960,24 @@ async def run_agent_capture(agent, message: str, session: "Session | None" = Non
                 elif isinstance(event, RunContentEvent):
                     if hasattr(event, "content") and event.content:
                         accumulated += event.content
+                        unflushed = accumulated[display._flushed_len:]
+                        
+                        # Auto-flush long chunks to prevent rich.Live smearing
+                        if unflushed.count("\n") > 15:
+                            break_point = unflushed.rfind("\n\n")
+                            if break_point == -1:
+                                break_point = unflushed.rfind("\n")
+                                
+                            if break_point != -1:
+                                chunk = unflushed[:break_point + 1]
+                                # Only flush if we are outside of a code block (balanced ```)
+                                if chunk.count("```") % 2 == 0:
+                                    live.stop()
+                                    console.print(Markdown(chunk))
+                                    display._flushed_len += len(chunk)
+                                    live.start()
+                                    live._live_render._shape = None
+
                         display.set_content(accumulated)
                         live.update(display)
 
@@ -1149,6 +1147,9 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
     paste_state = PasteState()
     prompt_session = _create_prompt_session(paste_state, config)
 
+    from arc.tools.codebase import load_mcp_tools
+    await load_mcp_tools()
+
     while True:
         try:
             paste_state.clear()
@@ -1165,6 +1166,8 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
             console.print(f"\n[dim]Session saved: {session.session_id}[/dim]")
             console.print(f"[dim]Resume with:[/dim] [bold cyan]arc --resume {session.session_id}[/bold cyan]")
             console.print("[dim]Bye![/dim]")
+            from arc.tools.mcp_client import cleanup_mcp
+            await cleanup_mcp()
             break
 
         user_input = _sanitize_input(paste_state.build_message(user_text))
@@ -1196,6 +1199,8 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
             console.print(f"[dim]Session saved: {session.session_id}[/dim]")
             console.print(f"[dim]Resume with:[/dim] [bold cyan]arc --resume {session.session_id}[/bold cyan]")
             console.print("[dim]Bye![/dim]")
+            from arc.tools.mcp_client import cleanup_mcp
+            await cleanup_mcp()
             break
 
         if user_input.startswith("/model"):
@@ -1248,6 +1253,19 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
                 for name, skill in config.skills.items():
                     console.print(f"  [bold cyan]{name}[/bold cyan]  [dim]{skill.description}[/dim]")
                 console.print(f"\n[dim]Source: .agents/skills/[/dim]")
+                console.print(f"\n[dim]Source: .agents/skills/[/dim]")
+            continue
+
+        if user_input.lower() == "/mcp":
+            from arc.tools.codebase import ALL_TOOLS
+            from agno.tools import Function
+            mcp_tools = [t for t in ALL_TOOLS if isinstance(t, Function) and getattr(t, "name", "").count("__") > 0]
+            if not mcp_tools:
+                console.print("[dim]No MCP tools loaded. Check arc.mcp.json config.[/dim]")
+            else:
+                console.print(f"[bold]Loaded MCP Tools ({len(mcp_tools)}):[/bold]\n")
+                for t in mcp_tools:
+                    console.print(f"  [bold cyan]{t.name}[/bold cyan]  [dim]{t.description}[/dim]")
             continue
 
         if user_input.lower() == "/help":
@@ -1271,10 +1289,8 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
             if planner is None:
                 planner = create_planner(session.model_id, extra_instructions)
 
-            context = session.get_context_summary()
+            # No need to manually inject session context into prompt; run_agent_capture will do it.
             prompt = task
-            if context:
-                prompt = f"{task}\n\n---\nContext from this session:\n{context}"
 
             plan_content = await run_agent_capture(planner, prompt, session)
 
