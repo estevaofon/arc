@@ -16,3 +16,4 @@ wheels/
 .arc/
 .claude/
 .coverage
+arc.bat
