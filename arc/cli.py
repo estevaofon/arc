@@ -1115,6 +1115,9 @@ async def execute_plan_steps(session: Session, executor_factory) -> str | None:
             step_prompt += (
                 f"\nCompleted steps are marked [x] above. Do NOT repeat them."
             )
+        step_prompt += (
+            "\n\nIMPORTANT: Just execute. Do NOT summarize or recap what you did."
+        )
 
         # Execute this step
         executor = executor_factory()
@@ -1147,6 +1150,21 @@ async def execute_plan_steps(session: Session, executor_factory) -> str | None:
         border_style="green" if all(s.status == "completed" for s in session.plan_steps) else "yellow",
         padding=(0, 1),
     ))
+
+    # Final walkthrough — one concise summary of everything that was done
+    if all_results:
+        console.print()
+        console.print("[bold cyan]Generating walkthrough...[/bold cyan]")
+        walkthrough_executor = executor_factory()
+        walkthrough_prompt = (
+            f"## Task: {session.plan_task}\n\n"
+            f"All steps are done. Give a brief walkthrough of what was accomplished — "
+            f"key changes, files modified, and anything the user should know. Be concise.\n\n"
+            f"## Completed Steps\n{session.render_plan_progress()}"
+        )
+        walkthrough = await run_agent_capture(walkthrough_executor, walkthrough_prompt, session)
+        if walkthrough:
+            all_results.append(f"### Walkthrough\n{walkthrough}")
 
     return "\n\n".join(all_results) if all_results else None
 

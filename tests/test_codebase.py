@@ -22,6 +22,13 @@ from arc.tools.codebase import (
     _is_long_running,
     _is_safe_command,
     _shell_split,
+    set_skip_permissions,
+    set_model_id,
+    set_console,
+    set_live,
+    set_display,
+    set_permission_rules,
+    reset_allowed_actions,
 )
 
 
@@ -60,6 +67,24 @@ class TestReadFile:
         f.write_bytes(b"\x00\x01\x02\x03")
         result = read_file(str(f))
         assert "Binary file detected" in result
+
+    def test_read_file_large_file_truncation(self, temp_dir: Path):
+        """Test that files larger than max_size are truncated with warning."""
+        f = temp_dir / "large.txt"
+        # Create a file larger than default max_size (30KB)
+        large_content = "x" * 100 + "\n"  # 101 bytes per line
+        lines_needed = 350  # ~35KB total
+        f.write_text(large_content * lines_needed)
+        
+        # Read with small max_size to trigger truncation
+        result = read_file(str(f), max_size=5000)
+        
+        # Should show truncation warning
+        assert "WARNING" in result
+        assert "File truncated" in result
+        assert "5,000 bytes" in result
+        assert "lines shown" in result
+        assert "Use start_line/end_line" in result
 
 
 # ── edit_file ────────────────────────────────────────────────────────
@@ -907,3 +932,111 @@ class TestBash:
         
         assert "line1" in result.lower()
         assert "line2" in result.lower() or len(result) > 0
+
+
+# ── Configuration Functions ──────────────────────────────────────────
+
+class TestConfigurationFunctions:
+    """Test configuration setter functions for codebase tools."""
+    
+    def test_set_skip_permissions(self):
+        """Test set_skip_permissions updates global flag."""
+        from arc.tools import codebase
+        
+        # Store original value
+        original = codebase._skip_permissions
+        
+        try:
+            set_skip_permissions(True)
+            assert codebase._skip_permissions is True
+            
+            set_skip_permissions(False)
+            assert codebase._skip_permissions is False
+        finally:
+            # Restore original
+            codebase._skip_permissions = original
+    
+    def test_set_model_id(self):
+        """Test set_model_id updates global model ID."""
+        from arc.tools import codebase
+        
+        original = codebase._model_id
+        
+        try:
+            set_model_id("claude-opus-4")
+            assert codebase._model_id == "claude-opus-4"
+            
+            set_model_id("claude-haiku-3-5")
+            assert codebase._model_id == "claude-haiku-3-5"
+        finally:
+            codebase._model_id = original
+    
+    def test_set_console(self):
+        """Test set_console updates global console reference."""
+        from arc.tools import codebase
+        from rich.console import Console
+        
+        original = codebase._console
+        
+        try:
+            mock_console = Console()
+            set_console(mock_console)
+            assert codebase._console is mock_console
+        finally:
+            codebase._console = original
+    
+    def test_set_live(self):
+        """Test set_live updates global Live instance reference."""
+        from arc.tools import codebase
+        
+        original = codebase._live
+        
+        try:
+            mock_live = object()
+            set_live(mock_live)
+            assert codebase._live is mock_live
+        finally:
+            codebase._live = original
+    
+    def test_set_display(self):
+        """Test set_display updates global StreamingDisplay reference."""
+        from arc.tools import codebase
+        
+        original = codebase._display
+        
+        try:
+            mock_display = object()
+            set_display(mock_display)
+            assert codebase._display is mock_display
+        finally:
+            codebase._display = original
+    
+    def test_set_permission_rules(self):
+        """Test set_permission_rules updates global permission rules list."""
+        from arc.tools import codebase
+        
+        original = codebase._permission_rules
+        
+        try:
+            rules = ["*.py", "tests/**"]
+            set_permission_rules(rules)
+            assert codebase._permission_rules == ["*.py", "tests/**"]
+            
+            # Verify it creates a copy
+            rules.append("new_rule")
+            assert "new_rule" not in codebase._permission_rules
+        finally:
+            codebase._permission_rules = original
+    
+    def test_reset_allowed_actions(self):
+        """Test reset_allowed_actions clears allowed actions set."""
+        from arc.tools import codebase
+        
+        # Add some actions
+        codebase._allowed_actions.add("write_file")
+        codebase._allowed_actions.add("bash")
+        assert len(codebase._allowed_actions) > 0
+        
+        # Reset
+        reset_allowed_actions()
+        assert len(codebase._allowed_actions) == 0
