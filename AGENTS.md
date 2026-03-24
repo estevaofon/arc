@@ -101,6 +101,32 @@ Core: `agno`, `anthropic`, `chromadb>=0.5`, `tree-sitter>=0.23`, `tree-sitter-py
 
 Python: **3.13+**
 
+## Development Workflow
+
+### Running Tests
+
+**ALWAYS** activate the virtual environment before running tests:
+
+```powershell
+# PowerShell (Windows)
+.\.venv\Scripts\activate.ps1
+
+# Then run tests
+pytest
+pytest --cov=arc --cov-report=html
+```
+
+```bash
+# Linux/macOS
+source .venv/bin/activate
+
+# Then run tests
+pytest
+pytest --cov=arc --cov-report=html
+```
+
+The project uses a local `.venv` virtual environment. All test commands and development workflows should be executed within this environment.
+
 ## Conventions
 
 - Async throughout (`asyncio`, `arun()` for agent execution)

@@ -14,3 +14,6 @@ wheels/
 
 # Arc data
 .arc/
+.claude/
+.coverage
+arc.bat

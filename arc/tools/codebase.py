@@ -970,7 +970,7 @@ _SUBAGENT_TOOLS = [
 ]
 
 
-def delegate_task(task: str, context: str = "") -> str:
+async def delegate_task(task: str, context: str = "") -> str:
     """Delegate a task to a sub-agent that runs autonomously and returns the result.
 
     Use this when you need to:
@@ -981,7 +981,7 @@ def delegate_task(task: str, context: str = "") -> str:
     The sub-agent has the same tools as you (read, write, edit, search, bash, web_fetch)
     but cannot delegate further.
 
-    When the model supports parallel tool calls, multiple delegate_task calls run concurrently.
+    Multiple delegate_task calls issued in the same response run concurrently.
 
     Args:
         task: Clear, specific description of what the sub-agent should do.
@@ -1011,7 +1011,7 @@ Do not create documentation files unless explicitly asked.
     )
 
     try:
-        result = sub.run(task, stream=False)
+        result = await sub.arun(task, stream=False)
         if result and result.content:
             return f"[SubAgent-{agent_id}] {result.content}"
         return f"[SubAgent-{agent_id}] Task completed but no output was returned."
