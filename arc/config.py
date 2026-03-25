@@ -44,6 +44,7 @@ class AgentConfig:
     commands: dict[str, CustomCommand] = field(default_factory=dict)
     skills: dict[str, Skill] = field(default_factory=dict)
     permissions: dict[str, Any] = field(default_factory=dict)
+    model_defaults: dict[str, str] = field(default_factory=dict)
 
     @property
     def has_instructions(self) -> bool:
@@ -208,8 +209,16 @@ def load_config(cwd: str | None = None) -> AgentConfig:
             try:
                 content = config_path.read_text(encoding="utf-8")
                 data = json.loads(content)
-                if isinstance(data, dict) and "permission" in data:
-                    config.permissions = data["permission"]
+                if isinstance(data, dict):
+                    if "permission" in data:
+                        config.permissions = data["permission"]
+                    # Load provider configuration
+                    if "providers" in data or "models" in data:
+                        from arc.providers import load_providers_from_config
+                        load_providers_from_config(data)
+                    # Store model defaults for CLI
+                    if "models" in data and isinstance(data["models"], dict):
+                        config.model_defaults = data["models"]
                 break
             except (OSError, UnicodeDecodeError, json.JSONDecodeError):
                 pass

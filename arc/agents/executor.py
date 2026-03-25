@@ -1,8 +1,8 @@
 """Executor agent - implements changes based on plans or direct instructions."""
 
 from agno.agent import Agent
-from agno.models.anthropic import Claude
 
+from arc.providers import create_model
 from arc.tools.codebase import ALL_TOOLS
 
 EXECUTOR_INSTRUCTIONS = """\
@@ -42,16 +42,21 @@ When given a plan, execute it step by step. When given a direct task, figure out
 """
 
 
-def create_executor(model_id: str = "claude-sonnet-4-5-20250929", extra_instructions: str = "") -> Agent:
-    """Create and return the executor agent."""
+def create_executor(model_ref: str = "anthropic/claude-sonnet-4-5", extra_instructions: str = "") -> Agent:
+    """Create and return the executor agent.
+
+    Args:
+        model_ref: Provider/model reference (e.g., "anthropic/claude-sonnet-4-5", "ollama/llama3.1").
+        extra_instructions: Additional instructions to append.
+    """
     instructions = EXECUTOR_INSTRUCTIONS
-    
+
     if extra_instructions:
         instructions = f"{instructions}\n\n{extra_instructions}"
-        
+
     return Agent(
         name="Executor",
-        model=Claude(id=model_id, max_tokens=8192, cache_system_prompt=True),
+        model=create_model(model_ref, max_tokens=8192),
         tools=ALL_TOOLS,
         instructions=instructions,
         markdown=True,

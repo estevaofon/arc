@@ -24,6 +24,14 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
 ]
+openai = ["openai>=1.0"]
+ollama = ["ollama>=0.4"]
+groq = ["groq>=0.4"]
+all-providers = [
+    "openai>=1.0",
+    "ollama>=0.4",
+    "groq>=0.4",
+]
 
 [project.scripts]
 arc = "arc.cli:main"

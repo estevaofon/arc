@@ -28,6 +28,13 @@ from rich.text import Text
 from arc.agents.executor import create_executor
 from arc.agents.planner import create_planner
 from arc.config import AgentConfig, load_config, render_command_template
+from arc.providers import (
+    LEGACY_MODEL_ALIASES,
+    create_model,
+    get_model_display,
+    list_providers,
+    resolve_model_ref,
+)
 
 import io as _io
 
@@ -37,12 +44,8 @@ if sys.platform == "win32" and not hasattr(sys, "_called_from_test"):
 
 console = Console()
 
-AVAILABLE_MODELS = {
-    "sonnet": "claude-sonnet-4-5-20250929",
-    "opus": "claude-opus-4-20250514",
-    "haiku": "claude-haiku-3-5-20241022",
-}
-DEFAULT_MODEL = "sonnet"
+# Default model reference (provider/model format)
+DEFAULT_MODEL = "anthropic/claude-sonnet-4-5"
 
 
 def _sanitize_input(text: str) -> str:
@@ -96,12 +99,12 @@ TIPS = [
     "Place AGENTS.md in project root for custom instructions.",
     "Use .agents/commands/ and .agents/skills/ for extensions.",
     "Use ! <command> to run shell commands directly.",
-    "Use /model to switch between sonnet, opus, and haiku.",
+    "Use /model to switch providers (e.g., /model ollama/llama3.1).",
     "Use /sessions to resume previous conversations.",
 ]
 
 
-def _render_home(session_model_key: str, skip_permissions: bool) -> None:
+def _render_home(session: "Session", skip_permissions: bool) -> None:
     """Render a clean home screen inspired by Claude Code."""
     from art import text2art
     from rich.table import Table
@@ -112,7 +115,7 @@ def _render_home(session_model_key: str, skip_permissions: bool) -> None:
         logo.append("  " + line + "\n", style="bold cyan")
     console.print(logo)
     console.print(
-        Text("  A coding agent powered by Claude + Agno", style="dim"),
+        Text("  A coding agent powered by multiple LLM providers + Agno", style="dim"),
     )
     console.print()
 
@@ -126,10 +129,9 @@ def _render_home(session_model_key: str, skip_permissions: bool) -> None:
 
     # Status line
     mode_label = "[red]skip permissions[/red]" if skip_permissions else "[green]safe mode[/green]"
-    model_id = AVAILABLE_MODELS[session_model_key]
     console.print(
         Text.from_markup(
-            f"  [dim]model:[/dim] [bold]{session_model_key}[/bold] [dim]({model_id})[/dim]"
+            f"  [dim]model:[/dim] [bold]{session.model_display}[/bold] [dim]({session.model_id})[/dim]"
             f"  [dim]|[/dim]  {mode_label}"
         )
     )
@@ -142,7 +144,7 @@ def _render_home(session_model_key: str, skip_permissions: bool) -> None:
 SLASH_COMMANDS = [
     ("/help", "Show help and available commands", "/help"),
     ("/plan", "Create an implementation plan", "/plan <task>"),
-    ("/model", "Switch model (sonnet, opus, haiku)", "/model [name]"),
+    ("/model", "Switch model/provider", "/model [provider/model]"),
     ("/sessions", "List recent sessions", "/sessions"),
     ("/commands", "List custom commands", "/commands"),
     ("/skills", "List available skills", "/skills"),
@@ -435,7 +437,7 @@ class Session:
         self.current_plan: str | None = None
         self.plan_task: str | None = None
         self.plan_steps: list[PlanStep] = []
-        self.model_key: str = DEFAULT_MODEL
+        self.model_ref: str = DEFAULT_MODEL  # provider/model format
         self.cwd: str = os.getcwd()
         self.created_at: str = time.strftime("%Y-%m-%d %H:%M:%S")
         self.updated_at: str = self.created_at
@@ -447,7 +449,17 @@ class Session:
 
     @property
     def model_id(self) -> str:
-        return AVAILABLE_MODELS[self.model_key]
+        """Resolve to the actual model ID for the API."""
+        from arc.providers import _get_actual_model_id, get_provider
+        provider_key, model_name = resolve_model_ref(self.model_ref)
+        provider = get_provider(provider_key)
+        if provider:
+            return _get_actual_model_id(provider, model_name)
+        return model_name
+
+    @property
+    def model_display(self) -> str:
+        return get_model_display(self.model_ref)
 
     @property
     def title(self) -> str:
@@ -505,7 +517,7 @@ class Session:
             "current_plan": self.current_plan,
             "plan_task": self.plan_task,
             "plan_steps": [s.to_dict() for s in self.plan_steps],
-            "model_key": self.model_key,
+            "model_ref": self.model_ref,
             "cwd": self.cwd,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
@@ -518,7 +530,12 @@ class Session:
         session.current_plan = data.get("current_plan")
         session.plan_task = data.get("plan_task")
         session.plan_steps = [PlanStep.from_dict(s) for s in data.get("plan_steps", [])]
-        session.model_key = data.get("model_key", DEFAULT_MODEL)
+        # Support both new "model_ref" and legacy "model_key" for backward compat
+        model_ref = data.get("model_ref")
+        if not model_ref:
+            legacy_key = data.get("model_key", "sonnet")
+            model_ref = LEGACY_MODEL_ALIASES.get(legacy_key, DEFAULT_MODEL)
+        session.model_ref = model_ref
         session.cwd = data.get("cwd", os.getcwd())
         session.created_at = data.get("created_at", "")
         session.updated_at = data.get("updated_at", "")
@@ -624,7 +641,7 @@ class SessionStore:
                 sessions.append({
                     "session_id": data["session_id"],
                     "title": data.get("plan_task") or self._first_user_msg(data),
-                    "model": data.get("model_key", "?"),
+                    "model": data.get("model_ref", data.get("model_key", "?")),
                     "messages": len(data.get("history", [])),
                     "updated_at": data.get("updated_at", ""),
                     "cwd": data.get("cwd", ""),
@@ -652,7 +669,6 @@ class SessionStore:
 def create_general_agent(session: Session, config: AgentConfig | None = None):
     """Create the general-purpose agent."""
     from agno.agent import Agent
-    from agno.models.anthropic import Claude
 
     from arc.tools.codebase import ALL_TOOLS
 
@@ -660,7 +676,7 @@ def create_general_agent(session: Session, config: AgentConfig | None = None):
 
     return Agent(
         name="Arc",
-        model=Claude(id=session.model_id, max_tokens=8192, cache_system_prompt=True),
+        model=create_model(session.model_ref, max_tokens=8192),
         tools=ALL_TOOLS,
         instructions=GENERAL_INSTRUCTIONS.format(
             extra_instructions=extra,
@@ -711,7 +727,7 @@ def _show_help(config: AgentConfig | None):
     
     # Built-in commands
     table.add_row("/plan <task>", "Create detailed implementation plan")
-    table.add_row("/model [name]", "Switch models (sonnet/opus/haiku)")
+    table.add_row("/model [provider/model]", "Switch models (e.g., ollama/llama3.1, openai/gpt-4o)")
     table.add_row("/sessions", "List recent sessions")
     table.add_row("/commands", "List custom commands")
     table.add_row("/skills", "List available skills")
@@ -963,12 +979,43 @@ async def run_agent_capture(agent, message: str, session: "Session | None" = Non
         display = StreamingDisplay(status)
         tracker = display.tool_tracker
 
+        # Build enriched message with environment context and conversation history
+        dynamic_parts = []
+        cwd = os.getcwd()
+        dynamic_parts.append(f"The current working directory is: {cwd}")
+
+        if session:
+            env_context_parts = []
+            from arc.tools.codebase import get_project_tree
+            tree_text = get_project_tree(cwd, max_depth=3)
+            if tree_text:
+                env_context_parts.append(f"Directory Tree (max depth 3):\n```text\n{tree_text}\n```")
+
+            try:
+                git_status = subprocess.run(
+                    ["git", "status", "-s"], capture_output=True, text=True, cwd=cwd, timeout=2
+                ).stdout.strip()
+                if git_status:
+                    env_context_parts.append(f"Git status:\n{git_status}")
+            except Exception:
+                pass
+
+            if env_context_parts:
+                dynamic_parts.append("## Environment Context\n" + "\n\n".join(env_context_parts))
+
+            ctx_summary = session.get_context_summary()
+            if ctx_summary:
+                dynamic_parts.append(ctx_summary)
+
+        dynamic_context = "\n\n".join(dynamic_parts)
+        run_message = f"{dynamic_context}\n\n---\n\n## Current Task/Message\n{message}"
+
         run_output = None
         with Live(display, console=console, refresh_per_second=10) as live:
             set_live(live)
             set_display(display)
             accumulated = ""
-            async for event in agent.arun(message, stream=True, stream_events=True, yield_run_output=True):
+            async for event in agent.arun(run_message, stream=True, stream_events=True, yield_run_output=True):
                 if isinstance(event, RunOutput):
                     run_output = event
                     break
@@ -1171,11 +1218,27 @@ async def execute_plan_steps(session: Session, executor_factory) -> str | None:
 
 async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
     """Main REPL loop."""
-    from arc.tools.codebase import set_console, set_model_id, set_skip_permissions, reset_allowed_actions, set_permission_rules
+    from arc.tools.codebase import set_console, set_model_id, set_small_model_ref, set_skip_permissions, reset_allowed_actions, set_permission_rules
     set_console(console)
     set_skip_permissions(skip_permissions)
 
     store = SessionStore()
+
+    def _sync_model(sess: Session):
+        """Sync the model IDs to the tools module from the session's model_ref."""
+        set_model_id(sess.model_id)
+        # Determine small model for sub-agents based on provider
+        small_ref = config.model_defaults.get("small") if config else None
+        if not small_ref:
+            provider_key, _ = resolve_model_ref(sess.model_ref)
+            # Use same provider but pick a small/fast model
+            _small_defaults = {
+                "anthropic": "anthropic/claude-haiku-4-5",
+                "openai": "openai/gpt-4o-mini",
+                "groq": "groq/llama-3.1-8b-instant",
+            }
+            small_ref = _small_defaults.get(provider_key, sess.model_ref)
+        set_small_model_ref(small_ref)
 
     # Load project configuration (AGENTS.md, .agents/commands, .agents/skills)
     config = load_config()
@@ -1210,11 +1273,13 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
                 completed = sum(1 for s in session.plan_steps if s.status == "completed")
                 console.print(f"[dim]Steps: {completed}/{len(session.plan_steps)} completed[/dim]")
         # Restore model
-        if session.model_key in AVAILABLE_MODELS:
-            set_model_id(AVAILABLE_MODELS[session.model_key])
+        _sync_model(session)
     else:
         session = Session()
-        _render_home(session.model_key, skip_permissions)
+        # Apply default model from config if set
+        if config.model_defaults.get("default"):
+            session.model_ref = config.model_defaults["default"]
+        _render_home(session, skip_permissions)
 
     planner = None
     executor = None
@@ -1240,7 +1305,7 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
             user_text = (
                 await asyncio.to_thread(
                     prompt_session.prompt,
-                    HTML(f"<b><cyan>arc</cyan></b> <style fg='ansigray'>({session.model_key})</style><b><cyan>&gt;</cyan></b> "),
+                    HTML(f"<b><cyan>arc</cyan></b> <style fg='ansigray'>({session.model_display})</style><b><cyan>&gt;</cyan></b> "),
                     multiline=False,
                 )
             ).strip()
@@ -1287,18 +1352,40 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
             break
 
         if user_input.startswith("/model"):
-            arg = user_input[6:].strip().lower()
+            arg = user_input[6:].strip()
             if not arg:
-                console.print(f"[bold]Current model:[/bold] {session.model_key} ({session.model_id})")
-                console.print(f"[dim]Available: {', '.join(AVAILABLE_MODELS.keys())}[/dim]")
-            elif arg in AVAILABLE_MODELS:
-                session.model_key = arg
-                set_model_id(session.model_id)
-                planner = None
-                executor = None
-                console.print(f"[bold green]Switched to {arg}[/bold green] ({AVAILABLE_MODELS[arg]})")
+                console.print(f"[bold]Current model:[/bold] {session.model_display} ({session.model_id})")
+                console.print()
+                console.print("[bold]Legacy aliases:[/bold]")
+                for alias, ref in LEGACY_MODEL_ALIASES.items():
+                    console.print(f"  [cyan]{alias}[/cyan] → {ref}")
+                console.print()
+                console.print("[bold]Providers:[/bold]")
+                for pkey, pconfig in list_providers().items():
+                    dflt = pconfig.default_model or "—"
+                    console.print(f"  [cyan]{pkey}[/cyan] ({pconfig.name}) — default: {dflt}")
+                console.print()
+                console.print("[dim]Usage: /model <provider/model> (e.g., /model ollama/llama3.1, /model openai/gpt-4o)[/dim]")
             else:
-                console.print(f"[yellow]Unknown model '{arg}'. Available: {', '.join(AVAILABLE_MODELS.keys())}[/yellow]")
+                arg_lower = arg.lower()
+                try:
+                    # Validate the model reference resolves to a known provider
+                    provider_key, model_name = resolve_model_ref(arg_lower)
+                    from arc.providers import get_provider
+                    provider = get_provider(provider_key)
+                    if provider is None:
+                        available = ", ".join(sorted(list_providers().keys()))
+                        console.print(f"[yellow]Unknown provider '{provider_key}'. Available: {available}[/yellow]")
+                    else:
+                        session.model_ref = arg_lower if "/" in arg_lower else (
+                            LEGACY_MODEL_ALIASES.get(arg_lower, arg_lower)
+                        )
+                        _sync_model(session)
+                        planner = None
+                        executor = None
+                        console.print(f"[bold green]Switched to {session.model_display}[/bold green] ({session.model_id})")
+                except Exception as e:
+                    console.print(f"[yellow]Error: {e}[/yellow]")
             continue
 
         if user_input.lower() in ("/sessions", "/list"):
@@ -1370,7 +1457,7 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
 
             console.print("[bold magenta]Planning...[/bold magenta]")
             if planner is None:
-                planner = create_planner(session.model_id, extra_instructions)
+                planner = create_planner(session.model_ref, extra_instructions)
 
             # No need to manually inject session context into prompt; run_agent_capture will do it.
             prompt = task
@@ -1390,7 +1477,7 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
                     console.print("[bold green]Executing plan...[/bold green]")
 
                     def make_executor():
-                        return create_executor(session.model_id, extra_instructions)
+                        return create_executor(session.model_ref, extra_instructions)
 
                     result = await execute_plan_steps(session, make_executor)
                     if result:

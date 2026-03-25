@@ -16,11 +16,11 @@ from arc.cli import (
     Session,
     SessionStore,
     PasteState,
-    AVAILABLE_MODELS,
     DEFAULT_MODEL,
     SLASH_COMMANDS,
     _MENTION_RE,
 )
+from arc.providers import LEGACY_MODEL_ALIASES
 
 
 # ── _sanitize_input ─────────────────────────────────────────────────
@@ -194,13 +194,13 @@ class TestSession:
         assert session.session_id
         assert session.history == []
         assert session.current_plan is None
-        assert session.model_key == DEFAULT_MODEL
+        assert session.model_ref == DEFAULT_MODEL
         assert session.total_input_tokens == 0
 
     def test_model_id_property(self):
         session = Session()
-        session.model_key = "opus"
-        assert session.model_id == AVAILABLE_MODELS["opus"]
+        session.model_ref = "anthropic/claude-opus-4"
+        assert session.model_id == "claude-opus-4-20250514"
 
     def test_title_from_plan_task(self):
         session = Session()
@@ -287,7 +287,7 @@ class TestSession:
         session = Session(session_id="test123")
         session.add_message("user", "hello")
         session.set_plan("task", "- [ ] Step 1: Do it\n- [ ] Step 2: Test it")
-        session.model_key = "opus"
+        session.model_ref = "anthropic/claude-opus-4"
 
         d = session.to_dict()
         restored = Session.from_dict(d)
@@ -295,7 +295,7 @@ class TestSession:
         assert restored.session_id == "test123"
         assert len(restored.history) == 1
         assert restored.current_plan is not None
-        assert restored.model_key == "opus"
+        assert restored.model_ref == "anthropic/claude-opus-4"
         assert len(restored.plan_steps) == 2
 
     def test_get_context_summary_empty(self):
@@ -451,13 +451,15 @@ class TestPasteState:
 # ── Constants ────────────────────────────────────────────────────────
 
 class TestCliConstants:
-    def test_available_models(self):
-        assert "sonnet" in AVAILABLE_MODELS
-        assert "opus" in AVAILABLE_MODELS
-        assert "haiku" in AVAILABLE_MODELS
+    def test_legacy_model_aliases(self):
+        assert "sonnet" in LEGACY_MODEL_ALIASES
+        assert "opus" in LEGACY_MODEL_ALIASES
+        assert "haiku" in LEGACY_MODEL_ALIASES
 
-    def test_default_model_exists(self):
-        assert DEFAULT_MODEL in AVAILABLE_MODELS
+    def test_default_model_is_valid_ref(self):
+        from arc.providers import resolve_model_ref, get_provider
+        provider_key, model_name = resolve_model_ref(DEFAULT_MODEL)
+        assert get_provider(provider_key) is not None
 
     def test_slash_commands_have_tuples(self):
         for cmd in SLASH_COMMANDS:

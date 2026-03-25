@@ -1,8 +1,8 @@
 """Planning agent - analyzes codebase and creates implementation plans."""
 
 from agno.agent import Agent
-from agno.models.anthropic import Claude
 
+from arc.providers import create_model
 from arc.tools.codebase import glob_search, grep_search, list_directory, read_file, web_search, web_fetch
 from arc.tools.indexer import semantic_search
 from arc.tools.ast_tools import code_structure, find_dependencies
@@ -43,16 +43,21 @@ Your output MUST follow this exact structure. No other format is accepted:
 """
 
 
-def create_planner(model_id: str = "claude-sonnet-4-5-20250929", extra_instructions: str = "") -> Agent:
-    """Create and return the planner agent."""
+def create_planner(model_ref: str = "anthropic/claude-sonnet-4-5", extra_instructions: str = "") -> Agent:
+    """Create and return the planner agent.
+
+    Args:
+        model_ref: Provider/model reference (e.g., "anthropic/claude-sonnet-4-5", "ollama/llama3.1").
+        extra_instructions: Additional instructions to append.
+    """
     instructions = PLANNER_INSTRUCTIONS
-    
+
     if extra_instructions:
         instructions = f"{instructions}\n\n{extra_instructions}"
-        
+
     return Agent(
         name="Planner",
-        model=Claude(id=model_id, max_tokens=4096, cache_system_prompt=True),
+        model=create_model(model_ref, max_tokens=4096),
         tools=[read_file, glob_search, grep_search, list_directory, web_search, web_fetch,
                semantic_search, code_structure, find_dependencies, rank_files],
         instructions=instructions,

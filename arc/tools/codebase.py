@@ -33,9 +33,23 @@ def set_skip_permissions(value: bool):
     _skip_permissions = value
 
 
+_small_model_ref: str = "anthropic/claude-haiku-4-5"  # Small model for sub-agents
+
+
 def set_model_id(model_id: str):
     global _model_id
     _model_id = model_id
+
+
+def set_small_model_ref(model_ref: str):
+    """Set the small/fast model reference used by sub-agents."""
+    global _small_model_ref
+    _small_model_ref = model_ref
+
+
+def _get_small_model_ref() -> str:
+    """Get the small model reference for sub-agents."""
+    return _small_model_ref
 
 
 def set_live(live):
@@ -988,10 +1002,14 @@ async def delegate_task(task: str, context: str = "") -> str:
         context: Optional extra context (e.g., relevant file paths, constraints).
     """
     from agno.agent import Agent
-    from agno.models.anthropic import Claude
+    from arc.providers import create_model
 
     agent_id = _next_subagent_id()
     cwd = os.getcwd()
+
+    # Use a small/fast model for sub-agents. Resolve from the global _model_id's provider
+    # to pick the right "small" model, falling back to anthropic/claude-haiku-4-5.
+    small_model_ref = _get_small_model_ref()
 
     instructions = f"""\
 You are a sub-agent (#{agent_id}) working on a specific task. Be focused and concise.
@@ -1004,7 +1022,7 @@ Do not create documentation files unless explicitly asked.
 
     sub = Agent(
         name=f"SubAgent-{agent_id}",
-        model=Claude(id="claude-haiku-4-5-20251001", max_tokens=4096, cache_system_prompt=True),
+        model=create_model(small_model_ref, max_tokens=4096),
         tools=_SUBAGENT_TOOLS,
         instructions=instructions,
         markdown=True,
