@@ -1,6 +1,6 @@
 # Providers & LLMs
 
-Arc supports multiple LLM providers through a unified `provider/model` format. You can switch between cloud APIs and local models without changing your workflow.
+Aru supports multiple LLM providers through a unified `provider/model` format. You can switch between cloud APIs and local models without changing your workflow.
 
 ## Quick Start
 
@@ -22,9 +22,9 @@ Arc supports multiple LLM providers through a unified `provider/model` format. Y
 | Provider | Key | API Key Env Var | Default Model | Install |
 |---|---|---|---|---|
 | Anthropic | `anthropic` | `ANTHROPIC_API_KEY` | `claude-sonnet-4-5` | included |
-| OpenAI | `openai` | `OPENAI_API_KEY` | `gpt-4o` | `pip install arc[openai]` |
-| Ollama | `ollama` | - | `llama3.1` | `pip install arc[ollama]` |
-| Groq | `groq` | `GROQ_API_KEY` | `llama-3.3-70b-versatile` | `pip install arc[groq]` |
+| OpenAI | `openai` | `OPENAI_API_KEY` | `gpt-4o` | `pip install aru-code[openai]` |
+| Ollama | `ollama` | - | `llama3.1` | `pip install aru-code[ollama]` |
+| Groq | `groq` | `GROQ_API_KEY` | `llama-3.3-70b-versatile` | `pip install aru-code[groq]` |
 | OpenRouter | `openrouter` | `OPENROUTER_API_KEY` | `anthropic/claude-sonnet-4-5` | included |
 | DeepSeek | `deepseek` | `DEEPSEEK_API_KEY` | `deepseek-chat` | included |
 
@@ -73,7 +73,7 @@ OPENAI_API_KEY=sk-...
 ```
 
 ```bash
-pip install arc[openai]
+pip install aru-code[openai]
 
 /model openai/gpt-4o
 /model openai/gpt-4o-mini
@@ -94,9 +94,9 @@ Rode modelos localmente sem API key. Requer o [Ollama](https://ollama.com) insta
 ollama pull llama3.1
 
 # 2. Instale a dependência
-pip install arc[ollama]
+pip install aru-code[ollama]
 
-# 3. Use no arc
+# 3. Use no aru
 /model ollama/llama3.1
 ```
 
@@ -116,7 +116,7 @@ ollama pull qwen2.5-coder
 /model ollama/qwen2.5-coder
 ```
 
-Se o Ollama estiver rodando em outra porta ou máquina, configure no `arc.json`:
+Se o Ollama estiver rodando em outra porta ou máquina, configure no `aru.json`:
 
 ```json
 {
@@ -142,7 +142,7 @@ GROQ_API_KEY=gsk_...
 ```
 
 ```bash
-pip install arc[groq]
+pip install aru-code[groq]
 
 /model groq/llama-3.3-70b-versatile
 /model groq/llama-3.1-8b-instant
@@ -182,9 +182,9 @@ DEEPSEEK_API_KEY=sk-...
 
 ---
 
-## Configuration (`arc.json`)
+## Configuration (`aru.json`)
 
-Toda a configuração de providers pode ser feita no `arc.json` na raiz do projeto.
+Toda a configuração de providers pode ser feita no `aru.json` na raiz do projeto.
 
 ### Definir model default
 
@@ -197,8 +197,8 @@ Toda a configuração de providers pode ser feita no `arc.json` na raiz do proje
 }
 ```
 
-- **`default`** — Model usado ao iniciar o arc (main agent, planner, executor)
-- **`small`** — Model usado por sub-agents (`delegate_task`). Se não definido, arc escolhe automaticamente um model pequeno/rápido do mesmo provider.
+- **`default`** — Model usado ao iniciar o aru (main agent, planner, executor)
+- **`small`** — Model usado por sub-agents (`delegate_task`). Se não definido, aru escolhe automaticamente um model pequeno/rápido do mesmo provider.
 
 ### Customizar providers existentes
 
@@ -277,7 +277,7 @@ Qualquer API compatível com OpenAI funciona via `"type": "openai"`:
 
 ## Sub-agents
 
-Quando o arc usa `delegate_task` para criar sub-agents, ele automaticamente escolhe um model menor/mais rápido do mesmo provider:
+Quando o aru usa `delegate_task` para criar sub-agents, ele automaticamente escolhe um model menor/mais rápido do mesmo provider:
 
 | Provider do main agent | Sub-agent model |
 |---|---|
@@ -329,4 +329,4 @@ GROQ_API_KEY=gsk_...
 /model groq/llama-3.3-70b-versatile  # Groq
 ```
 
-A troca de model é instantânea e vale para a sessão atual. O model escolhido é salvo na sessão e restaurado ao usar `arc --resume`.
+A troca de model é instantânea e vale para a sessão atual. O model escolhido é salvo na sessão e restaurado ao usar `aru --resume`.

@@ -1,4 +1,4 @@
-"""arc - A Claude Code clone built with Agno agents."""
+"""aru - A Claude Code clone built with Agno agents."""
 
 import os
 
@@ -9,7 +9,7 @@ import sys
 
 from dotenv import load_dotenv
 
-from arc.cli import run_cli
+from aru.cli import run_cli
 
 
 def main():

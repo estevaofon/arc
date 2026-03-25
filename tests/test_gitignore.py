@@ -1,4 +1,4 @@
-"""Unit tests for arc/tools/gitignore.py"""
+"""Unit tests for aru/tools/gitignore.py"""
 
 import os
 import time
@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from arc.tools.gitignore import (
+from aru.tools.gitignore import (
     _FALLBACK_PATTERNS,
     _cache,
     _find_git_root,
@@ -73,7 +73,7 @@ class TestLoadGitignore:
         assert spec.match_file("__pycache__/")
         assert spec.match_file("node_modules/")
         assert spec.match_file(".git/")
-        assert spec.match_file(".arc/")
+        assert spec.match_file(".aru/")
         assert spec.match_file("test.pyc")
 
     def test_loads_gitignore_file(self, temp_project):
@@ -271,15 +271,15 @@ class TestWalkFiltered:
             assert isinstance(dirs, list)
             assert isinstance(files, list)
 
-    def test_excludes_arc_directory(self, temp_project):
-        """Should always exclude .arc directory (fallback pattern)."""
-        arc_dir = temp_project / ".arc"
-        arc_dir.mkdir()
-        (arc_dir / "sessions").mkdir()
-        (arc_dir / "sessions" / "data.json").write_text("{}")
-        
+    def test_excludes_aru_directory(self, temp_project):
+        """Should always exclude .aru directory (fallback pattern)."""
+        aru_dir = temp_project / ".aru"
+        aru_dir.mkdir()
+        (aru_dir / "sessions").mkdir()
+        (aru_dir / "sessions" / "data.json").write_text("{}")
+
         results = list(walk_filtered(str(temp_project)))
         dirpaths = [r[0] for r in results]
-        
-        # .arc should never be visited
-        assert not any(".arc" in dp for dp in dirpaths)
+
+        # .aru should never be visited
+        assert not any(".aru" in dp for dp in dirpaths)

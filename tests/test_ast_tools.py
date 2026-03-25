@@ -1,4 +1,4 @@
-"""Tests for arc/tools/ast_tools.py — AST-based code analysis."""
+"""Tests for aru/tools/ast_tools.py — AST-based code analysis."""
 
 import os
 import tempfile
@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from arc.tools.ast_tools import (
+from aru.tools.ast_tools import (
     SUPPORTED_EXTENSIONS,
     _extract_decorators,
     _extract_function,

@@ -1,10 +1,10 @@
-"""Unit tests for arc.providers — multi-provider LLM abstraction."""
+"""Unit tests for aru.providers — multi-provider LLM abstraction."""
 
 from unittest.mock import patch, MagicMock
 
 import pytest
 
-from arc.providers import (
+from aru.providers import (
     BUILTIN_PROVIDERS,
     LEGACY_MODEL_ALIASES,
     ProviderConfig,
@@ -151,7 +151,7 @@ class TestLoadProvidersFromConfig:
 
 
 class TestCreateModel:
-    @patch("arc.providers._create_provider_model")
+    @patch("aru.providers._create_provider_model")
     def test_anthropic_model(self, mock_create):
         mock_create.return_value = MagicMock()
         create_model("anthropic/claude-sonnet-4-5")
@@ -159,7 +159,7 @@ class TestCreateModel:
         call_kwargs = mock_create.call_args
         assert call_kwargs[1]["model_id"] == "claude-sonnet-4-5-20250929"
 
-    @patch("arc.providers._create_provider_model")
+    @patch("aru.providers._create_provider_model")
     def test_ollama_model(self, mock_create):
         mock_create.return_value = MagicMock()
         create_model("ollama/llama3.1")
@@ -167,14 +167,14 @@ class TestCreateModel:
         call_kwargs = mock_create.call_args
         assert call_kwargs[1]["model_id"] == "llama3.1"
 
-    @patch("arc.providers._create_provider_model")
+    @patch("aru.providers._create_provider_model")
     def test_legacy_alias(self, mock_create):
         mock_create.return_value = MagicMock()
         create_model("sonnet")
         call_kwargs = mock_create.call_args
         assert call_kwargs[1]["model_id"] == "claude-sonnet-4-5-20250929"
 
-    @patch("arc.providers._create_provider_model")
+    @patch("aru.providers._create_provider_model")
     def test_max_tokens_override(self, mock_create):
         mock_create.return_value = MagicMock()
         create_model("anthropic/claude-sonnet-4-5", max_tokens=16384)

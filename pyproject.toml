@@ -1,5 +1,5 @@
 [project]
-name = "arc"
+name = "aru-code"
 version = "0.1.0"
 description = "A Claude Code clone built with Agno agents"
 readme = "README.md"
@@ -35,7 +35,7 @@ all-providers = [
 ]
 
 [project.scripts]
-arc = "arc.cli:main"
+aru = "aru.cli:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

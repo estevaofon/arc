@@ -1,4 +1,4 @@
-"""Tests for arc.tools.ranker module."""
+"""Tests for aru.tools.ranker module."""
 
 import os
 import tempfile
@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from unittest.mock import patch
 
-from arc.tools.ranker import (
+from aru.tools.ranker import (
     _extract_keywords,
     _score_name_match,
     _score_recency,
@@ -259,7 +259,7 @@ class TestGetSemanticScores:
             assert scores == {}
 
     def test_returns_empty_on_exception(self, tmp_path):
-        with patch("arc.tools.indexer._init_client", side_effect=Exception("fail")):
+        with patch("aru.tools.indexer._init_client", side_effect=Exception("fail")):
             scores = _get_semantic_scores("test query", str(tmp_path))
             assert scores == {}
 

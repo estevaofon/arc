@@ -12,9 +12,9 @@ wheels/
 # Environment variables
 .env
 
-# Arc data
-.arc/
+# Aru data
+.aru/
 .claude/
 .coverage
-arc.bat
+aru.bat
 coverage.json

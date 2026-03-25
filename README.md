@@ -1,4 +1,4 @@
-# arc
+# aru
 
 Um assistente de codificação inteligente powered by Claude e Agno agents.
 
@@ -10,7 +10,7 @@ Um assistente de codificação inteligente powered by Claude e Agno agents.
 - **Planejamento de Tarefas** — Quebra de tarefas complexas em etapas com execução automática
 - **Flexibilidade de Modelos** — Alterne entre Sonnet (balanceado), Opus (poderoso) e Haiku (rápido)
 - **Busca Semântica** — Busca de código baseada em embeddings com chromadb
-- **Comandos e Skills Personalizados** — Estenda arc via diretório `.agents/`
+- **Comandos e Skills Personalizados** — Estenda aru via diretório `.agents/`
 - **Suporte MCP** — Integração com Model Context Protocol servers
 
 ## Início Rápido
@@ -24,7 +24,7 @@ cp .env.example .env
 # Edite .env e adicione: ANTHROPIC_API_KEY=sk-ant-sua-chave-aqui
 
 # Executar
-arc
+aru
 ```
 
 **Requisitos:** Python 3.13+ e uma [chave de API da Anthropic](https://console.anthropic.com/)
@@ -35,7 +35,7 @@ arc
 
 | Comando | Descrição |
 |---------|-----------|
-| Linguagem natural | Apenas digite — arc cuida do resto |
+| Linguagem natural | Apenas digite — aru cuida do resto |
 | `/plan <tarefa>` | Cria plano de implementação detalhado |
 | `/model [nome]` | Alterna modelos (sonnet/opus/haiku) |
 | `/mcp` | Lista servidores e ferramentas MCP disponíveis |
@@ -44,28 +44,28 @@ arc
 | `/sessions` | Lista sessões recentes |
 | `/help` | Mostra todos os comandos |
 | `! <comando>` | Executa comandos shell |
-| `/quit` ou `/exit` | Sai do arc |
+| `/quit` ou `/exit` | Sai do aru |
 
 ### Opções CLI
 
 ```bash
-arc                                    # Inicia nova sessão
-arc --resume <id>                      # Retoma sessão
-arc --resume last                      # Retoma última sessão
-arc --list                             # Lista sessões
-arc --dangerously-skip-permissions     # Pula prompts de permissão
+aru                                    # Inicia nova sessão
+aru --resume <id>                      # Retoma sessão
+aru --resume last                      # Retoma última sessão
+aru --list                             # Lista sessões
+aru --dangerously-skip-permissions     # Pula prompts de permissão
 ```
 
 ### Exemplos
 
 ```
-arc> /plan criar uma REST API com FastAPI para gerenciar usuários
+aru> /plan criar uma REST API com FastAPI para gerenciar usuários
 
-arc> refatorar o módulo de autenticação para usar tokens JWT
+aru> refatorar o módulo de autenticação para usar tokens JWT
 
-arc> ! pytest tests/ -v
+aru> ! pytest tests/ -v
 
-arc> /model opus
+aru> /model opus
 ```
 
 ## Agentes
@@ -104,7 +104,7 @@ arc> /model opus
 
 ## Configuração
 
-Arc suporta configuração a nível de projeto através de:
+Aru suporta configuração a nível de projeto através de:
 
 ### AGENTS.md
 Coloque um arquivo `AGENTS.md` na raiz do seu projeto com instruções personalizadas que serão anexadas a todos os prompts do sistema dos agentes.
@@ -123,7 +123,7 @@ Arquivos de comando suportam frontmatter com `description` e a variável templat
 
 ### Suporte MCP (Model Context Protocol)
 
-Arc pode carregar ferramentas de servidores MCP. Configure em `.arc/mcp_config.json`:
+Aru pode carregar ferramentas de servidores MCP. Configure em `.aru/mcp_config.json`:
 
 ```json
 {
@@ -139,8 +139,8 @@ Arc pode carregar ferramentas de servidores MCP. Configure em `.arc/mcp_config.j
 ## Arquitetura
 
 ```
-arc/
-├── arc/
+aru-code/
+├── aru/
 │   ├── cli.py              # CLI interativa com display em streaming (1306 LOC)
 │   ├── config.py           # Carregador de configuração (AGENTS.md, .agents/)
 │   ├── agents/
@@ -153,7 +153,7 @@ arc/
 │       ├── ranker.py       # Ranking de relevância de arquivos (280 LOC)
 │       ├── mcp_client.py   # Cliente MCP (145 LOC)
 │       └── gitignore.py    # Filtro gitignore-aware (104 LOC)
-├── .arc/                   # Dados locais (sessões, índice, embeddings)
+├── .aru/                   # Dados locais (sessões, índice, embeddings)
 └── pyproject.toml
 ```
 
@@ -176,7 +176,7 @@ pip install -e ".[dev]"
 pytest
 
 # Executar testes com cobertura
-pytest --cov=arc --cov-report=html
+pytest --cov=aru --cov-report=html
 ```
 
 ---

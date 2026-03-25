@@ -1,4 +1,4 @@
-"""Unit tests for arc.tools.codebase core tools."""
+"""Unit tests for aru.tools.codebase core tools."""
 
 import os
 from pathlib import Path
@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from arc.tools.codebase import (
+from aru.tools.codebase import (
     read_file,
     write_file,
     write_files,
@@ -35,7 +35,7 @@ from arc.tools.codebase import (
 # All write/edit tools need permission bypass
 @pytest.fixture(autouse=True)
 def _bypass_permissions():
-    with patch("arc.tools.codebase._ask_permission", return_value=True):
+    with patch("aru.tools.codebase._ask_permission", return_value=True):
         yield
 
 
@@ -121,7 +121,7 @@ class TestWriteFile:
 
     def test_write_permission_denied(self, temp_dir: Path):
         target = temp_dir / "denied.txt"
-        with patch("arc.tools.codebase._ask_permission", return_value=False):
+        with patch("aru.tools.codebase._ask_permission", return_value=False):
             result = write_file(str(target), "nope")
         assert "Permission denied" in result
         assert not target.exists()
@@ -209,7 +209,7 @@ class TestWriteFiles:
         files = [
             {"path": str(temp_dir / "file1.txt"), "content": "content1"},
         ]
-        with patch("arc.tools.codebase._ask_permission", return_value=False):
+        with patch("aru.tools.codebase._ask_permission", return_value=False):
             result = write_files(files)
         assert "Permission denied" in result
         assert not (temp_dir / "file1.txt").exists()
@@ -292,7 +292,7 @@ class TestEditFiles:
         f.write_text("old\n")
         
         edits = [{"path": str(f), "old_string": "old", "new_string": "new"}]
-        with patch("arc.tools.codebase._ask_permission", return_value=False):
+        with patch("aru.tools.codebase._ask_permission", return_value=False):
             result = edit_files(edits)
         
         assert "Permission denied" in result
@@ -799,7 +799,7 @@ class TestBash:
     def test_bash_safe_command_no_permission_prompt(self):
         """Test safe commands bypass permission prompt."""
         # Mock permission to track if it was called
-        with patch("arc.tools.codebase._ask_permission") as mock_perm:
+        with patch("aru.tools.codebase._ask_permission") as mock_perm:
             result = bash("ls")
             # Permission should NOT be asked for safe commands
             mock_perm.assert_not_called()
@@ -807,7 +807,7 @@ class TestBash:
     
     def test_bash_safe_git_status(self):
         """Test git status is safe and executes."""
-        with patch("arc.tools.codebase._ask_permission") as mock_perm:
+        with patch("aru.tools.codebase._ask_permission") as mock_perm:
             result = bash("git status")
             mock_perm.assert_not_called()
             # Should execute without error
@@ -815,14 +815,14 @@ class TestBash:
     
     def test_bash_safe_echo(self):
         """Test echo command is safe."""
-        with patch("arc.tools.codebase._ask_permission") as mock_perm:
+        with patch("aru.tools.codebase._ask_permission") as mock_perm:
             result = bash("echo test")
             mock_perm.assert_not_called()
             assert "test" in result.lower()
     
     def test_bash_unsafe_command_requires_permission(self):
         """Test unsafe commands require permission."""
-        with patch("arc.tools.codebase._ask_permission", return_value=True) as mock_perm:
+        with patch("aru.tools.codebase._ask_permission", return_value=True) as mock_perm:
             result = bash("rm test.txt")
             # Permission SHOULD be asked
             mock_perm.assert_called_once()
@@ -831,14 +831,14 @@ class TestBash:
     
     def test_bash_unsafe_command_permission_denied(self):
         """Test unsafe command with permission denied."""
-        with patch("arc.tools.codebase._ask_permission", return_value=False):
+        with patch("aru.tools.codebase._ask_permission", return_value=False):
             result = bash("rm dangerous.txt")
             assert "Permission denied" in result
             assert "rm dangerous.txt" in result
     
     def test_bash_unsafe_command_permission_granted(self):
         """Test unsafe command with permission granted."""
-        with patch("arc.tools.codebase._ask_permission", return_value=True):
+        with patch("aru.tools.codebase._ask_permission", return_value=True):
             result = bash("echo unsafe_but_allowed")
             # Should execute (echo is actually safe, but testing flow)
             assert "unsafe_but_allowed" in result.lower()
@@ -853,7 +853,7 @@ class TestBash:
             cmd = "sleep 0.1"
         
         # ping is not in safe commands list, so use echo instead
-        with patch("arc.tools.codebase._ask_permission", return_value=True) as mock_perm:
+        with patch("aru.tools.codebase._ask_permission", return_value=True) as mock_perm:
             result = bash(cmd, timeout=5)
             # Should complete within timeout
             assert "timeout" not in result.lower() or len(result) >= 0
@@ -872,14 +872,14 @@ class TestBash:
     
     def test_bash_chained_safe_commands(self):
         """Test chained safe commands don't need permission."""
-        with patch("arc.tools.codebase._ask_permission") as mock_perm:
+        with patch("aru.tools.codebase._ask_permission") as mock_perm:
             result = bash("echo hello && echo world")
             mock_perm.assert_not_called()
             assert "hello" in result.lower() or "world" in result.lower()
     
     def test_bash_chained_with_unsafe(self):
         """Test chained commands with one unsafe requires permission."""
-        with patch("arc.tools.codebase._ask_permission", return_value=True) as mock_perm:
+        with patch("aru.tools.codebase._ask_permission", return_value=True) as mock_perm:
             bash("echo hello && rm test.txt")
             mock_perm.assert_called_once()
     
@@ -889,13 +889,13 @@ class TestBash:
         if sys.platform == "win32":
             # findstr is not in safe commands, so test will require permission
             cmd = "echo hello | findstr hello"
-            with patch("arc.tools.codebase._ask_permission", return_value=True) as mock_perm:
+            with patch("aru.tools.codebase._ask_permission", return_value=True) as mock_perm:
                 result = bash(cmd)
                 # On Windows, findstr requires permission
                 assert "hello" in result.lower() or len(result) >= 0
         else:
             cmd = "echo hello | grep hello"
-            with patch("arc.tools.codebase._ask_permission") as mock_perm:
+            with patch("aru.tools.codebase._ask_permission") as mock_perm:
                 result = bash(cmd)
                 mock_perm.assert_not_called()
                 assert "hello" in result.lower()
@@ -941,7 +941,7 @@ class TestConfigurationFunctions:
     
     def test_set_skip_permissions(self):
         """Test set_skip_permissions updates global flag."""
-        from arc.tools import codebase
+        from aru.tools import codebase
         
         # Store original value
         original = codebase._skip_permissions
@@ -958,7 +958,7 @@ class TestConfigurationFunctions:
     
     def test_set_model_id(self):
         """Test set_model_id updates global model ID."""
-        from arc.tools import codebase
+        from aru.tools import codebase
         
         original = codebase._model_id
         
@@ -973,7 +973,7 @@ class TestConfigurationFunctions:
     
     def test_set_console(self):
         """Test set_console updates global console reference."""
-        from arc.tools import codebase
+        from aru.tools import codebase
         from rich.console import Console
         
         original = codebase._console
@@ -987,7 +987,7 @@ class TestConfigurationFunctions:
     
     def test_set_live(self):
         """Test set_live updates global Live instance reference."""
-        from arc.tools import codebase
+        from aru.tools import codebase
         
         original = codebase._live
         
@@ -1000,7 +1000,7 @@ class TestConfigurationFunctions:
     
     def test_set_display(self):
         """Test set_display updates global StreamingDisplay reference."""
-        from arc.tools import codebase
+        from aru.tools import codebase
         
         original = codebase._display
         
@@ -1013,7 +1013,7 @@ class TestConfigurationFunctions:
     
     def test_set_permission_rules(self):
         """Test set_permission_rules updates global permission rules list."""
-        from arc.tools import codebase
+        from aru.tools import codebase
         
         original = codebase._permission_rules
         
@@ -1030,7 +1030,7 @@ class TestConfigurationFunctions:
     
     def test_reset_allowed_actions(self):
         """Test reset_allowed_actions clears allowed actions set."""
-        from arc.tools import codebase
+        from aru.tools import codebase
         
         # Add some actions
         codebase._allowed_actions.add("write_file")

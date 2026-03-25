@@ -1,10 +1,10 @@
-"""Unit tests for arc.agents.planner — agent creation and configuration."""
+"""Unit tests for aru.agents.planner — agent creation and configuration."""
 
 from unittest.mock import patch, MagicMock
 
 import pytest
 
-from arc.agents.planner import (
+from aru.agents.planner import (
     PLANNER_INSTRUCTIONS,
     create_planner,
 )
@@ -29,8 +29,8 @@ class TestPlannerInstructions:
 
 
 class TestCreatePlanner:
-    @patch("arc.agents.planner.Agent")
-    @patch("arc.agents.planner.create_model")
+    @patch("aru.agents.planner.Agent")
+    @patch("aru.agents.planner.create_model")
     def test_creates_agent(self, mock_create_model, mock_agent):
         agent = create_planner()
         mock_agent.assert_called_once()
@@ -38,38 +38,38 @@ class TestCreatePlanner:
         assert call_kwargs["name"] == "Planner"
         assert call_kwargs["markdown"] is True
 
-    @patch("arc.agents.planner.Agent")
-    @patch("arc.agents.planner.create_model")
+    @patch("aru.agents.planner.Agent")
+    @patch("aru.agents.planner.create_model")
     def test_default_model(self, mock_create_model, mock_agent):
         create_planner()
         mock_create_model.assert_called_once()
         call_args = mock_create_model.call_args
         assert call_args[0][0] == "anthropic/claude-sonnet-4-5"
 
-    @patch("arc.agents.planner.Agent")
-    @patch("arc.agents.planner.create_model")
+    @patch("aru.agents.planner.Agent")
+    @patch("aru.agents.planner.create_model")
     def test_custom_model_ref(self, mock_create_model, mock_agent):
         create_planner(model_ref="openai/gpt-4o")
         call_args = mock_create_model.call_args
         assert call_args[0][0] == "openai/gpt-4o"
 
-    @patch("arc.agents.planner.Agent")
-    @patch("arc.agents.planner.create_model")
+    @patch("aru.agents.planner.Agent")
+    @patch("aru.agents.planner.create_model")
     def test_extra_instructions_appended(self, mock_create_model, mock_agent):
         create_planner(extra_instructions="Focus on security")
         call_kwargs = mock_agent.call_args[1]
         assert "Focus on security" in call_kwargs["instructions"]
         assert PLANNER_INSTRUCTIONS in call_kwargs["instructions"]
 
-    @patch("arc.agents.planner.Agent")
-    @patch("arc.agents.planner.create_model")
+    @patch("aru.agents.planner.Agent")
+    @patch("aru.agents.planner.create_model")
     def test_no_extra_instructions(self, mock_create_model, mock_agent):
         create_planner(extra_instructions="")
         call_kwargs = mock_agent.call_args[1]
         assert call_kwargs["instructions"] == PLANNER_INSTRUCTIONS
 
-    @patch("arc.agents.planner.Agent")
-    @patch("arc.agents.planner.create_model")
+    @patch("aru.agents.planner.Agent")
+    @patch("aru.agents.planner.create_model")
     def test_has_read_only_tools(self, mock_create_model, mock_agent):
         create_planner()
         call_kwargs = mock_agent.call_args[1]
@@ -80,8 +80,8 @@ class TestCreatePlanner:
         assert "glob_search" in tool_names
         assert "grep_search" in tool_names
 
-    @patch("arc.agents.planner.Agent")
-    @patch("arc.agents.planner.create_model")
+    @patch("aru.agents.planner.Agent")
+    @patch("aru.agents.planner.create_model")
     def test_lower_max_tokens(self, mock_create_model, mock_agent):
         create_planner()
         call_args = mock_create_model.call_args

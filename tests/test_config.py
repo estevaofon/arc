@@ -1,8 +1,8 @@
-"""Unit tests for arc.config module."""
+"""Unit tests for aru.config module."""
 
 import pytest
 from pathlib import Path
-from arc.config import (
+from aru.config import (
     AgentConfig,
     CustomCommand,
     Skill,

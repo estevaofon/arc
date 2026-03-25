@@ -1,1 +1,1 @@
-"""Test suite for arc project."""
+"""Test suite for aru project."""

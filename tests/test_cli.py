@@ -1,4 +1,4 @@
-"""Unit tests for arc.cli — session management, plan parsing, and helpers."""
+"""Unit tests for aru.cli — session management, plan parsing, and helpers."""
 
 import json
 import os
@@ -8,7 +8,7 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from arc.cli import (
+from aru.cli import (
     _sanitize_input,
     _resolve_mentions,
     PlanStep,
@@ -20,7 +20,7 @@ from arc.cli import (
     SLASH_COMMANDS,
     _MENTION_RE,
 )
-from arc.providers import LEGACY_MODEL_ALIASES
+from aru.providers import LEGACY_MODEL_ALIASES
 
 
 # ── _sanitize_input ─────────────────────────────────────────────────
@@ -458,7 +458,7 @@ class TestCliConstants:
         assert "haiku" in LEGACY_MODEL_ALIASES
 
     def test_default_model_is_valid_ref(self):
-        from arc.providers import resolve_model_ref, get_provider
+        from aru.providers import resolve_model_ref, get_provider
         provider_key, model_name = resolve_model_ref(DEFAULT_MODEL)
         assert get_provider(provider_key) is not None
 

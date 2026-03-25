@@ -1,6 +1,6 @@
-# Arc — AI Coding Assistant
+# Aru — AI Coding Assistant
 
-Arc is a multi-agent CLI coding assistant powered by Claude (via Agno framework). It provides an interactive REPL where users describe tasks in natural language, and agents plan and execute code changes using 16 integrated tools.
+Aru is a multi-agent CLI coding assistant powered by Claude (via Agno framework). It provides an interactive REPL where users describe tasks in natural language, and agents plan and execute code changes using 16 integrated tools.
 
 ## Architecture
 
@@ -16,7 +16,7 @@ All agents use Claude models (sonnet/opus/haiku) via Agno's `Agent` class with s
 ## Project Structure
 
 ```
-arc/
+aru/
 ├── cli.py              # Interactive CLI, session management, command routing (1260 LOC)
 ├── config.py           # Loads AGENTS.md, .agents/commands/, .agents/skills/
 ├── agents/
@@ -35,7 +35,7 @@ arc/
 ### `cli.py` — Entry Point & REPL
 
 - `run_cli()`: Main async loop — loads config, creates session, processes input
-- `Session`: Conversation history (last 20 msgs), plan tracking, model selection, token metrics. Persisted as JSON in `.arc/sessions/`
+- `Session`: Conversation history (last 20 msgs), plan tracking, model selection, token metrics. Persisted as JSON in `.aru/sessions/`
 - Command routing: `/` slash commands, `!` shell passthrough, natural language → agent
 - `StreamingDisplay` + `StatusBar`: Rich-based live terminal rendering
 
@@ -75,8 +75,8 @@ Permission model: read-only tools auto-approve; write/bash tools prompt user (wi
 
 ### `tools/indexer.py` — Semantic Search
 
-- Chromadb vector DB persisted in `.arc/chroma/`
-- Chunks files (1500 chars, 200 overlap), tracks mtimes in `.arc/index_meta.json`
+- Chromadb vector DB persisted in `.aru/chroma/`
+- Chunks files (1500 chars, 200 overlap), tracks mtimes in `.aru/index_meta.json`
 - Lazy init on first `semantic_search` call
 
 ### `tools/ranker.py` — File Relevance Ranking
@@ -90,9 +90,9 @@ Tree-sitter based Python parser. Extracts imports, classes, functions, decorator
 ## Data & Config Files
 
 - `.env` → `ANTHROPIC_API_KEY`
-- `.arc/sessions/` → Saved conversation sessions (JSON)
-- `.arc/chroma/` → Chromadb embeddings
-- `.arc/index_meta.json` → File indexing metadata
+- `.aru/sessions/` → Saved conversation sessions (JSON)
+- `.aru/chroma/` → Chromadb embeddings
+- `.aru/index_meta.json` → File indexing metadata
 - `.claude/settings.local.json` → Permission allowlists
 
 ## Dependencies
@@ -112,11 +112,11 @@ The project uses a local `.venv` virtual environment. When using the `bash` tool
 ```bash
 # Option 1: Use venv executables directly
 .venv/bin/pytest
-.venv/bin/pytest --cov=arc --cov-report=term-missing
+.venv/bin/pytest --cov=aru --cov-report=term-missing
 
 # Option 2: Use python -m if venv is already active in parent shell
 python -m pytest
-python -m pytest --cov=arc --cov-report=term-missing
+python -m pytest --cov=aru --cov-report=term-missing
 ```
 
 **Important:** Always prefer `--cov-report=term-missing` over `--cov-report=html` when running coverage tests. The HTML report consumes significantly more memory and can cause the process to be killed by the OOM killer, especially in memory-constrained environments like WSL2.

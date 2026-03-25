@@ -1,4 +1,4 @@
-"""Unit tests for arc.cli completers — SlashCommandCompleter, FileMentionCompleter, ArcCompleter."""
+"""Unit tests for aru.cli completers — SlashCommandCompleter, FileMentionCompleter, AruCompleter."""
 
 import os
 from pathlib import Path
@@ -7,13 +7,13 @@ from unittest.mock import Mock, patch
 import pytest
 from prompt_toolkit.document import Document
 
-from arc.cli import (
+from aru.cli import (
     SlashCommandCompleter,
     FileMentionCompleter,
-    ArcCompleter,
+    AruCompleter,
     SLASH_COMMANDS,
 )
-from arc.config import CustomCommand
+from aru.config import CustomCommand
 
 
 # ── SlashCommandCompleter ────────────────────────────────────────────
@@ -189,7 +189,7 @@ class TestFileMentionCompleter:
         completer = FileMentionCompleter()
         doc = Document("check @")
         with patch("os.getcwd", return_value=str(tmp_path)):
-            with patch("arc.tools.gitignore.is_ignored", return_value=False):
+            with patch("aru.tools.gitignore.is_ignored", return_value=False):
                 completions = list(completer.get_completions(doc, Mock()))
 
         file_names = [c.text for c in completions]
@@ -205,7 +205,7 @@ class TestFileMentionCompleter:
         completer = FileMentionCompleter()
         doc = Document("check @co")
         with patch("os.getcwd", return_value=str(tmp_path)):
-            with patch("arc.tools.gitignore.is_ignored", return_value=False):
+            with patch("aru.tools.gitignore.is_ignored", return_value=False):
                 completions = list(completer.get_completions(doc, Mock()))
 
         file_names = [c.text for c in completions]
@@ -218,7 +218,7 @@ class TestFileMentionCompleter:
         completer = FileMentionCompleter()
         doc = Document("@co")
         with patch("os.getcwd", return_value=str(tmp_path)):
-            with patch("arc.tools.gitignore.is_ignored", return_value=False):
+            with patch("aru.tools.gitignore.is_ignored", return_value=False):
                 completions = list(completer.get_completions(doc, Mock()))
 
         file_names = [c.text for c in completions]
@@ -231,7 +231,7 @@ class TestFileMentionCompleter:
         completer = FileMentionCompleter()
         doc = Document("@")
         with patch("os.getcwd", return_value=str(tmp_path)):
-            with patch("arc.tools.gitignore.is_ignored", return_value=False):
+            with patch("aru.tools.gitignore.is_ignored", return_value=False):
                 completions = list(completer.get_completions(doc, Mock()))
 
         # Check that directories have trailing slash
@@ -255,7 +255,7 @@ class TestFileMentionCompleter:
         completer = FileMentionCompleter()
         doc = Document("@src/")
         with patch("os.getcwd", return_value=str(tmp_path)):
-            with patch("arc.tools.gitignore.is_ignored", return_value=False):
+            with patch("aru.tools.gitignore.is_ignored", return_value=False):
                 completions = list(completer.get_completions(doc, Mock()))
 
         file_names = [c.text for c in completions]
@@ -272,7 +272,7 @@ class TestFileMentionCompleter:
         completer = FileMentionCompleter()
         doc = Document("@src/ma")
         with patch("os.getcwd", return_value=str(tmp_path)):
-            with patch("arc.tools.gitignore.is_ignored", return_value=False):
+            with patch("aru.tools.gitignore.is_ignored", return_value=False):
                 completions = list(completer.get_completions(doc, Mock()))
 
         file_names = [c.text for c in completions]
@@ -288,7 +288,7 @@ class TestFileMentionCompleter:
         # Windows-style path
         doc = Document("@src\\")
         with patch("os.getcwd", return_value=str(tmp_path)):
-            with patch("arc.tools.gitignore.is_ignored", return_value=False):
+            with patch("aru.tools.gitignore.is_ignored", return_value=False):
                 completions = list(completer.get_completions(doc, Mock()))
 
         file_names = [c.text for c in completions]
@@ -305,7 +305,7 @@ class TestFileMentionCompleter:
         completer = FileMentionCompleter()
         doc = Document("@")
         with patch("os.getcwd", return_value=str(tmp_path)):
-            with patch("arc.tools.gitignore.is_ignored", side_effect=mock_is_ignored):
+            with patch("aru.tools.gitignore.is_ignored", side_effect=mock_is_ignored):
                 completions = list(completer.get_completions(doc, Mock()))
 
         file_names = [c.text for c in completions]
@@ -319,7 +319,7 @@ class TestFileMentionCompleter:
         completer = FileMentionCompleter()
         doc = Document("@")
         with patch("os.getcwd", return_value=str(tmp_path)):
-            with patch("arc.tools.gitignore.is_ignored", return_value=False):
+            with patch("aru.tools.gitignore.is_ignored", return_value=False):
                 completions = list(completer.get_completions(doc, Mock()))
 
         file_names = [c.text for c in completions]
@@ -334,7 +334,7 @@ class TestFileMentionCompleter:
         completer = FileMentionCompleter()
         doc = Document("@")
         with patch("os.getcwd", return_value=str(tmp_path)):
-            with patch("arc.tools.gitignore.is_ignored", return_value=False):
+            with patch("aru.tools.gitignore.is_ignored", return_value=False):
                 completions = list(completer.get_completions(doc, Mock()))
 
         # Should limit to 50
@@ -353,7 +353,7 @@ class TestFileMentionCompleter:
         completer = FileMentionCompleter()
         doc = Document("check this @fi")
         with patch("os.getcwd", return_value=str(tmp_path)):
-            with patch("arc.tools.gitignore.is_ignored", return_value=False):
+            with patch("aru.tools.gitignore.is_ignored", return_value=False):
                 completions = list(completer.get_completions(doc, Mock()))
 
         file_names = [c.text for c in completions]
@@ -365,7 +365,7 @@ class TestFileMentionCompleter:
         completer = FileMentionCompleter()
         doc = Document("@con")
         with patch("os.getcwd", return_value=str(tmp_path)):
-            with patch("arc.tools.gitignore.is_ignored", return_value=False):
+            with patch("aru.tools.gitignore.is_ignored", return_value=False):
                 completions = list(completer.get_completions(doc, Mock()))
 
         if completions:
@@ -390,7 +390,7 @@ class TestFileMentionCompleter:
         completer = FileMentionCompleter()
         doc = Document("@sub/")
         with patch("os.getcwd", return_value=str(tmp_path)):
-            with patch("arc.tools.gitignore.is_ignored", return_value=False):
+            with patch("aru.tools.gitignore.is_ignored", return_value=False):
                 completions = list(completer.get_completions(doc, Mock()))
 
         # Display should use forward slashes and be relative
@@ -403,7 +403,7 @@ class TestFileMentionCompleter:
         completer = FileMentionCompleter()
         doc = Document("@first @fi")
         with patch("os.getcwd", return_value=str(tmp_path)):
-            with patch("arc.tools.gitignore.is_ignored", return_value=False):
+            with patch("aru.tools.gitignore.is_ignored", return_value=False):
                 completions = list(completer.get_completions(doc, Mock()))
 
         # Should complete from last @
@@ -411,13 +411,13 @@ class TestFileMentionCompleter:
         assert "file.py" in file_names
 
 
-# ── ArcCompleter ─────────────────────────────────────────────────────
+# ── AruCompleter ─────────────────────────────────────────────────────
 
-class TestArcCompleter:
-    """Tests for the merged ArcCompleter."""
+class TestAruCompleter:
+    """Tests for the merged AruCompleter."""
 
     def test_delegates_to_slash_completer(self):
-        completer = ArcCompleter()
+        completer = AruCompleter()
         doc = Document("/he")
         completions = list(completer.get_completions(doc, Mock()))
         cmd_names = [c.text for c in completions]
@@ -426,17 +426,17 @@ class TestArcCompleter:
     def test_delegates_to_file_completer(self, tmp_path):
         (tmp_path / "file.py").touch()
 
-        completer = ArcCompleter()
+        completer = AruCompleter()
         doc = Document("@fi")
         with patch("os.getcwd", return_value=str(tmp_path)):
-            with patch("arc.tools.gitignore.is_ignored", return_value=False):
+            with patch("aru.tools.gitignore.is_ignored", return_value=False):
                 completions = list(completer.get_completions(doc, Mock()))
 
         file_names = [c.text for c in completions]
         assert "file.py" in file_names
 
     def test_no_completions_for_plain_text(self, tmp_path):
-        completer = ArcCompleter()
+        completer = AruCompleter()
         doc = Document("just normal text")
         with patch("os.getcwd", return_value=str(tmp_path)):
             completions = list(completer.get_completions(doc, Mock()))
@@ -451,7 +451,7 @@ class TestArcCompleter:
                 source_path=".agents/commands/deploy.md",
             ),
         }
-        completer = ArcCompleter(custom_commands=custom)
+        completer = AruCompleter(custom_commands=custom)
         doc = Document("/dep")
         completions = list(completer.get_completions(doc, Mock()))
         cmd_names = [c.text for c in completions]
@@ -461,7 +461,7 @@ class TestArcCompleter:
         # If text starts with /, should not trigger @ completion
         (tmp_path / "file.py").touch()
 
-        completer = ArcCompleter()
+        completer = AruCompleter()
         doc = Document("/plan @fi")
         # Even though @ is present, slash is at start
         completions = list(completer.get_completions(doc, Mock()))
@@ -476,7 +476,7 @@ class TestArcCompleter:
         assert "file.py" not in file_names
 
     def test_handles_empty_input(self):
-        completer = ArcCompleter()
+        completer = AruCompleter()
         doc = Document("")
         completions = list(completer.get_completions(doc, Mock()))
         assert completions == []
@@ -484,10 +484,10 @@ class TestArcCompleter:
     def test_at_sign_in_middle_of_text(self, tmp_path):
         (tmp_path / "config.py").touch()
 
-        completer = ArcCompleter()
+        completer = AruCompleter()
         doc = Document("check @co")
         with patch("os.getcwd", return_value=str(tmp_path)):
-            with patch("arc.tools.gitignore.is_ignored", return_value=False):
+            with patch("aru.tools.gitignore.is_ignored", return_value=False):
                 completions = list(completer.get_completions(doc, Mock()))
 
         file_names = [c.text for c in completions]

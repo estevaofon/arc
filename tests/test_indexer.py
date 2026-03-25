@@ -1,4 +1,4 @@
-"""Unit tests for arc.tools.indexer — chunking, file detection, and metadata."""
+"""Unit tests for aru.tools.indexer — chunking, file detection, and metadata."""
 
 import json
 import os
@@ -7,19 +7,19 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from arc.tools.indexer import (
+from aru.tools.indexer import (
     _is_text_file,
     _chunk_file,
     _get_indexable_files,
     _load_meta,
     _save_meta,
-    _get_arc_dir,
+    _get_aru_dir,
     _TEXT_EXTENSIONS,
     _FILENAMES_TO_INDEX,
     CHUNK_SIZE,
     CHUNK_OVERLAP,
     MAX_FILE_SIZE,
-    ARC_DIR,
+    ARU_DIR,
     META_FILE,
 )
 
@@ -129,7 +129,7 @@ class TestMeta:
 
     def test_save_and_load_meta(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
-        import arc.tools.indexer as idx
+        import aru.tools.indexer as idx
         idx._index_meta = {"file.py": 12345.0}
         _save_meta()
 
@@ -149,14 +149,14 @@ class TestMeta:
         assert meta == {}
 
 
-# ── _get_arc_dir ─────────────────────────────────────────────────────
+# ── _get_aru_dir ─────────────────────────────────────────────────────
 
 class TestGetArcDir:
-    def test_creates_arc_dir(self, tmp_path, monkeypatch):
+    def test_creates_aru_dir(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
-        arc_dir = _get_arc_dir()
-        assert os.path.isdir(arc_dir)
-        assert arc_dir.endswith(ARC_DIR)
+        aru_dir = _get_aru_dir()
+        assert os.path.isdir(aru_dir)
+        assert aru_dir.endswith(ARU_DIR)
 
 
 # ── _get_indexable_files ─────────────────────────────────────────────
@@ -198,7 +198,7 @@ class TestGetIndexableFiles:
 
 class TestSemanticSearch:
     def test_missing_chromadb(self):
-        from arc.tools.indexer import semantic_search
+        from aru.tools.indexer import semantic_search
         with patch.dict("sys.modules", {"chromadb": None}):
             # Force reimport check
             with patch("builtins.__import__", side_effect=ImportError("no chromadb")):

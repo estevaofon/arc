@@ -1,10 +1,10 @@
-"""Unit tests for arc.agents.executor — agent creation and configuration."""
+"""Unit tests for aru.agents.executor — agent creation and configuration."""
 
 from unittest.mock import patch, MagicMock
 
 import pytest
 
-from arc.agents.executor import (
+from aru.agents.executor import (
     EXECUTOR_INSTRUCTIONS,
     create_executor,
 )
@@ -25,8 +25,8 @@ class TestExecutorInstructions:
 
 
 class TestCreateExecutor:
-    @patch("arc.agents.executor.Agent")
-    @patch("arc.agents.executor.create_model")
+    @patch("aru.agents.executor.Agent")
+    @patch("aru.agents.executor.create_model")
     def test_creates_agent(self, mock_create_model, mock_agent):
         agent = create_executor()
         mock_agent.assert_called_once()
@@ -34,38 +34,38 @@ class TestCreateExecutor:
         assert call_kwargs["name"] == "Executor"
         assert call_kwargs["markdown"] is True
 
-    @patch("arc.agents.executor.Agent")
-    @patch("arc.agents.executor.create_model")
+    @patch("aru.agents.executor.Agent")
+    @patch("aru.agents.executor.create_model")
     def test_default_model(self, mock_create_model, mock_agent):
         create_executor()
         mock_create_model.assert_called_once()
         call_args = mock_create_model.call_args
         assert call_args[0][0] == "anthropic/claude-sonnet-4-5"
 
-    @patch("arc.agents.executor.Agent")
-    @patch("arc.agents.executor.create_model")
+    @patch("aru.agents.executor.Agent")
+    @patch("aru.agents.executor.create_model")
     def test_custom_model_ref(self, mock_create_model, mock_agent):
         create_executor(model_ref="ollama/llama3.1")
         call_args = mock_create_model.call_args
         assert call_args[0][0] == "ollama/llama3.1"
 
-    @patch("arc.agents.executor.Agent")
-    @patch("arc.agents.executor.create_model")
+    @patch("aru.agents.executor.Agent")
+    @patch("aru.agents.executor.create_model")
     def test_extra_instructions_appended(self, mock_create_model, mock_agent):
         create_executor(extra_instructions="Always use TypeScript")
         call_kwargs = mock_agent.call_args[1]
         assert "Always use TypeScript" in call_kwargs["instructions"]
         assert EXECUTOR_INSTRUCTIONS in call_kwargs["instructions"]
 
-    @patch("arc.agents.executor.Agent")
-    @patch("arc.agents.executor.create_model")
+    @patch("aru.agents.executor.Agent")
+    @patch("aru.agents.executor.create_model")
     def test_no_extra_instructions(self, mock_create_model, mock_agent):
         create_executor(extra_instructions="")
         call_kwargs = mock_agent.call_args[1]
         assert call_kwargs["instructions"] == EXECUTOR_INSTRUCTIONS
 
-    @patch("arc.agents.executor.Agent")
-    @patch("arc.agents.executor.create_model")
+    @patch("aru.agents.executor.Agent")
+    @patch("aru.agents.executor.create_model")
     def test_tools_passed(self, mock_create_model, mock_agent):
         create_executor()
         call_kwargs = mock_agent.call_args[1]
