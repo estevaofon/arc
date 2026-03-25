@@ -542,19 +542,11 @@ class Session:
         return session
 
     def get_context_summary(self) -> str:
-        """Build compact context string from conversation history and active plan."""
+        """Build compact context string from active plan status."""
         parts = []
         if self.current_plan:
             # Send only plan progress (checkboxes), not the full plan text
             parts.append(f"## Active Plan\nTask: {self.plan_task}\n\n{self.render_plan_progress()}")
-        if self.history:
-            parts.append("## Recent History")
-            for msg in self.history[-5:]:
-                prefix = "User" if msg["role"] == "user" else "Assistant"
-                content = msg["content"]
-                if len(content) > 200:
-                    content = content[:200] + "..."
-                parts.append(f"**{prefix}:** {content}")
         return "\n\n".join(parts)
 
     def render_plan_progress(self) -> str:
@@ -962,6 +954,7 @@ class StreamingDisplay:
 
 async def run_agent_capture(agent, message: str, session: "Session | None" = None) -> str | None:
     """Run agent with async streaming display and parallel tool execution."""
+    from agno.models.message import Message
     from agno.run.agent import (
         RunContentEvent,
         RunOutput,
@@ -979,17 +972,20 @@ async def run_agent_capture(agent, message: str, session: "Session | None" = Non
         display = StreamingDisplay(status)
         tracker = display.tool_tracker
 
-        # Build enriched message with environment context and conversation history
+        # Build enriched message with environment context
         dynamic_parts = []
         cwd = os.getcwd()
         dynamic_parts.append(f"The current working directory is: {cwd}")
 
         if session:
             env_context_parts = []
-            from arc.tools.codebase import get_project_tree
-            tree_text = get_project_tree(cwd, max_depth=3)
-            if tree_text:
-                env_context_parts.append(f"Directory Tree (max depth 3):\n```text\n{tree_text}\n```")
+            try:
+                from arc.tools.codebase import get_project_tree
+                tree_text = get_project_tree(cwd, max_depth=3)
+                if tree_text:
+                    env_context_parts.append(f"Directory Tree (max depth 3):\n```text\n{tree_text}\n```")
+            except Exception:
+                pass
 
             try:
                 git_status = subprocess.run(
@@ -1003,19 +999,35 @@ async def run_agent_capture(agent, message: str, session: "Session | None" = Non
             if env_context_parts:
                 dynamic_parts.append("## Environment Context\n" + "\n\n".join(env_context_parts))
 
-            ctx_summary = session.get_context_summary()
-            if ctx_summary:
-                dynamic_parts.append(ctx_summary)
+            # Include active plan progress in context
+            if session.current_plan:
+                dynamic_parts.append(f"## Active Plan\nTask: {session.plan_task}\n\n{session.render_plan_progress()}")
 
         dynamic_context = "\n\n".join(dynamic_parts)
         run_message = f"{dynamic_context}\n\n---\n\n## Current Task/Message\n{message}"
+
+        # Build conversation history as real messages for the LLM
+        # Exclude the last user message (already in run_message) to avoid duplication
+        history_messages: list[Message] = []
+        if session and session.history:
+            # The last message is the current user input (already added before calling this function)
+            prior_history = session.history[:-1]
+            for msg in prior_history:
+                history_messages.append(Message(role=msg["role"], content=msg["content"], from_history=True))
+
+        # Combine: history messages + current enriched message
+        if history_messages:
+            history_messages.append(Message(role="user", content=run_message))
+            agent_input = history_messages
+        else:
+            agent_input = run_message
 
         run_output = None
         with Live(display, console=console, refresh_per_second=10) as live:
             set_live(live)
             set_display(display)
             accumulated = ""
-            async for event in agent.arun(run_message, stream=True, stream_events=True, yield_run_output=True):
+            async for event in agent.arun(agent_input, stream=True, stream_events=True, yield_run_output=True):
                 if isinstance(event, RunOutput):
                     run_output = event
                     break
@@ -1267,6 +1279,8 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
         console.print(Markdown(f"# arc - Resuming session `{session.session_id}`"))
         console.print(f"[dim]Title: {session.title}[/dim]")
         console.print(f"[dim]Messages: {len(session.history)} | Created: {session.created_at}[/dim]")
+        if session.history:
+            console.print(f"[green]Session loaded — {len(session.history)} messages restored.[/green]")
         if session.current_plan:
             console.print(f"[dim]Active plan: {session.plan_task}[/dim]")
             if session.plan_steps:

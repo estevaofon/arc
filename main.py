@@ -10,9 +10,19 @@ from arc.cli import run_cli
 
 def main():
     load_dotenv()
-    skip_permissions = "--dangerously-skip-permissions" in sys.argv
+    args = sys.argv[1:]
+    skip_permissions = "--dangerously-skip-permissions" in args
+
+    resume_id = None
+    if "--resume" in args:
+        idx = args.index("--resume")
+        if idx + 1 < len(args) and not args[idx + 1].startswith("--"):
+            resume_id = args[idx + 1]
+        else:
+            resume_id = "last"
+
     try:
-        asyncio.run(run_cli(skip_permissions=skip_permissions))
+        asyncio.run(run_cli(skip_permissions=skip_permissions, resume_id=resume_id))
     except (KeyboardInterrupt, asyncio.CancelledError, SystemExit):
         pass  # Handled by cli.main() or run_cli's own exit logic
 

@@ -310,12 +310,13 @@ class TestSession:
         assert "Active Plan" in result
         assert "my task" in result
 
-    def test_get_context_summary_with_history(self):
+    def test_get_context_summary_without_plan(self):
+        """History is now passed as real messages, not in context summary."""
         session = Session()
         session.add_message("user", "hello")
         session.add_message("assistant", "hi there")
         result = session.get_context_summary()
-        assert "Recent History" in result
+        assert result == ""
 
     def test_render_plan_progress_empty(self):
         session = Session()
