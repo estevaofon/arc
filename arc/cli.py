@@ -1096,7 +1096,7 @@ async def run_agent_capture(agent, message: str, session: "Session | None" = Non
         if remaining:
             console.print(Markdown(remaining))
 
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, asyncio.CancelledError):
         set_live(None)
         set_display(None)
         console.print("\n[yellow]Interrupted.[/yellow]")
@@ -1177,7 +1177,7 @@ async def execute_plan_steps(session: Session, executor_factory) -> str | None:
             else:
                 step.status = "completed"
                 completed_context += f"\n- Step {step.index} ({step.description}): Done (no output)"
-        except KeyboardInterrupt:
+        except (KeyboardInterrupt, asyncio.CancelledError):
             step.status = "failed"
             console.print(f"\n[yellow]Step {step.index} interrupted.[/yellow]")
             # Ask if user wants to continue with remaining steps
@@ -1309,7 +1309,7 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
                     multiline=False,
                 )
             ).strip()
-        except (EOFError, KeyboardInterrupt):
+        except (EOFError, KeyboardInterrupt, asyncio.CancelledError):
             store.save(session)
             console.print(f"\n[dim]Session saved: {session.session_id}[/dim]")
             console.print(f"[dim]Resume with:[/dim] [bold cyan]arc --resume {session.session_id}[/bold cyan]")
@@ -1560,15 +1560,18 @@ def main():
 
     try:
         asyncio.run(run_cli(skip_permissions=skip_permissions, resume_id=resume_id))
-    except KeyboardInterrupt:
-        # Catch Ctrl+C that escapes the REPL (e.g., during y/n prompts)
-        # Try to save and show resume hint
-        try:
-            store = SessionStore()
-            last = store.load_last()
-            if last:
-                console.print(f"\n[dim]Session saved: {last.session_id}[/dim]")
-                console.print(f"[dim]Resume with:[/dim] [bold cyan]arc --resume {last.session_id}[/bold cyan]")
-        except Exception:
-            pass
-        console.print("[dim]Bye![/dim]")
+    except (KeyboardInterrupt, asyncio.CancelledError, SystemExit):
+        _graceful_exit()
+
+
+def _graceful_exit():
+    """Save session and show resume hint on exit."""
+    try:
+        store = SessionStore()
+        last = store.load_last()
+        if last:
+            console.print(f"\n[dim]Session saved: {last.session_id}[/dim]")
+            console.print(f"[dim]Resume with:[/dim] [bold cyan]arc --resume {last.session_id}[/bold cyan]")
+    except Exception:
+        pass
+    console.print("[dim]Bye![/dim]")
