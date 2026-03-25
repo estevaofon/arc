@@ -705,7 +705,8 @@ def run_shell(command: str):
         process.kill()
         console.print("\n[yellow]Interrupted.[/yellow]")
     except Exception as e:
-        console.print(f"[red]Error: {e}[/red]")
+        from rich.markup import escape
+        console.print(f"[red]Error: {escape(str(e))}[/red]")
     console.print()
 
 
@@ -1115,7 +1116,8 @@ async def run_agent_capture(agent, message: str, session: "Session | None" = Non
     except Exception as e:
         set_live(None)
         set_display(None)
-        console.print(f"[red]Error: {e}[/red]")
+        from rich.markup import escape
+        console.print(f"[red]Error: {escape(str(e))}[/red]")
 
     console.print()
     return final_content
