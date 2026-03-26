@@ -9,6 +9,7 @@ import re
 import subprocess
 import sys
 import time
+from datetime import datetime
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import Completer, Completion
@@ -438,7 +439,7 @@ class Session:
         self.plan_steps: list[PlanStep] = []
         self.model_ref: str = DEFAULT_MODEL  # provider/model format
         self.cwd: str = os.getcwd()
-        self.created_at: str = time.strftime("%Y-%m-%d %H:%M:%S")
+        self.created_at: str = datetime.now().isoformat(timespec="milliseconds")
         self.updated_at: str = self.created_at
         self.total_input_tokens: int = 0
         self.total_output_tokens: int = 0
@@ -585,7 +586,7 @@ class Session:
             summary_parts.append(f"[{role}]: {text}")
         summary = "[Conversation summary of earlier messages]\n" + "\n".join(summary_parts)
         self.history = [{"role": "user", "content": summary}] + rest
-        self.updated_at = time.strftime("%Y-%m-%d %H:%M:%S")
+        self.updated_at = datetime.now().isoformat(timespec="milliseconds")
 
     def to_dict(self) -> dict:
         return {
