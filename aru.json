@@ -3,7 +3,8 @@
         "default": "openrouter/deepseek/deepseek-chat-v3-0324",
         "minimax": "openrouter/minimax/minimax-m2.5",
         "deepseek-v3": "openrouter/deepseek/deepseek-chat-v3-0324",
-        "sonnet-4-6": "anthropic/claude-sonnet-4-6"
+        "sonnet-4-6": "anthropic/claude-sonnet-4-6",
+        "opus-4-6": "anthropic/claude-opus-4-6"
     },
     "providers": {
         "deepseek": {
