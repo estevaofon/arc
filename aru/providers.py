@@ -359,13 +359,13 @@ def _create_provider_model(
         return OpenRouter(**params)
 
     elif provider_type == "deepseek":
-        from agno.models.deepseek import DeepSeekChat
+        from agno.models.deepseek import DeepSeek
         api_key = _resolve_api_key(provider)
         params = {"id": model_id, "max_tokens": max_tokens}
         if api_key:
             params["api_key"] = api_key
         params.update(kwargs)
-        return DeepSeekChat(**params)
+        return DeepSeek(**params)
 
     else:
         # Fallback: try OpenAI-compatible (works for many providers)

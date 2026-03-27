@@ -191,14 +191,14 @@ def read_file(file_path: str, start_line: int = 0, end_line: int = 0, max_size: 
             s = max(start_line, 1) - 1  # Convert to 0-indexed
             e = end_line if end_line > 0 else total_lines
             e = min(e, total_lines)
-            
+
             # Cap the maximum lines returned to prevent huge context blowouts
             max_lines = 1000
             truncated = False
             if e - s > max_lines:
                 e = s + max_lines
                 truncated = True
-                
+
             selected = lines[s:e]
             numbered = [f"{s + i + 1:4d} | {line}" for i, line in enumerate(selected)]
             header = f"[Lines {s + 1}-{e} of {total_lines}]\n"
@@ -557,7 +557,16 @@ def glob_search(pattern: str, directory: str = ".") -> str:
         for filename in files:
             filepath = os.path.join(root, filename)
             rel_path = os.path.relpath(filepath, directory)
-            if fnmatch.fnmatch(rel_path, pattern) or fnmatch.fnmatch(filename, pattern):
+            # Normalize to forward slashes for consistent fnmatch behaviour on Windows
+            rel_posix = rel_path.replace('\\', '/')
+            matched = fnmatch.fnmatch(rel_posix, pattern)
+            # For patterns like **/*.py, also match root-level files against the suffix
+            # because fnmatch requires a path separator before the file part
+            if not matched and pattern.startswith('**/'):
+                matched = fnmatch.fnmatch(filename, pattern[3:])
+            if not matched:
+                matched = fnmatch.fnmatch(filename, pattern)
+            if matched:
                 matches.append(rel_path)
 
     if not matches:

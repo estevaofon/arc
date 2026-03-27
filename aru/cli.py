@@ -73,11 +73,14 @@ _MENTION_RE = re.compile(r'(?<!\S)@([a-zA-Z0-9_./\\-]+)')
 _MENTION_MAX_SIZE = 30_000  # bytes, same limit as read_file
 
 
-def _resolve_mentions(text: str, cwd: str) -> str:
-    """Resolve @file mentions by appending file contents to the message."""
+def _resolve_mentions(text: str, cwd: str) -> tuple[str, int]:
+    """Resolve @file mentions by appending file contents to the message.
+
+    Returns (resolved_text, number_of_files_attached).
+    """
     matches = list(_MENTION_RE.finditer(text))
     if not matches:
-        return text
+        return text, 0
 
     appendix_parts = []
     seen = set()
@@ -105,8 +108,8 @@ def _resolve_mentions(text: str, cwd: str) -> str:
             continue
 
     if appendix_parts:
-        return text + "".join(appendix_parts)
-    return text
+        return text + "".join(appendix_parts), len(appendix_parts)
+    return text, 0
 
 
 TIPS = [
@@ -1263,12 +1266,50 @@ def ask_yes_no(prompt: str) -> bool:
         return False
 
 
+def _extract_plan_file_paths(plan_text: str) -> list[str]:
+    """Extract file paths mentioned in plan steps (e.g., 'in `aru/cli.py`')."""
+    # Match backtick-quoted paths that look like file paths
+    matches = re.findall(r"`([^`]+\.\w{1,5})`", plan_text or "")
+    seen = set()
+    paths = []
+    for m in matches:
+        norm = os.path.normpath(m)
+        if norm not in seen and os.path.isfile(norm):
+            seen.add(norm)
+            paths.append(norm)
+    return paths
+
+
+def _build_file_context(file_paths: list[str], max_total: int = 20_000) -> str:
+    """Read files and build a context string, respecting a total char budget."""
+    if not file_paths:
+        return ""
+    parts = []
+    total = 0
+    for path in file_paths:
+        try:
+            content = open(path, "r", encoding="utf-8").read()
+            if total + len(content) > max_total:
+                continue
+            total += len(content)
+            parts.append(f"### `{path}`\n```\n{content}\n```")
+        except Exception:
+            continue
+    if not parts:
+        return ""
+    return "## Pre-loaded file contents (do NOT re-read these files)\n\n" + "\n\n".join(parts)
+
+
 async def execute_plan_steps(session: Session, executor_factory) -> str | None:
     """Execute plan steps one by one with live progress tracking.
 
     Shows a checkbox progress panel that updates as each step completes.
     Each step runs as a separate executor call with full context.
     """
+    # Pre-load files mentioned in the plan to avoid redundant reads per step
+    plan_files = _extract_plan_file_paths(session.current_plan)
+    file_context = _build_file_context(plan_files)
+
     if not session.plan_steps:
         # No structured steps — fall back to single execution
         executor = executor_factory()
@@ -1300,12 +1341,15 @@ async def execute_plan_steps(session: Session, executor_factory) -> str | None:
         # Build step-specific prompt — compact to save tokens
         # Only show current step + compact progress (not full descriptions of other steps)
         compact_progress = session.render_compact_progress(step.index)
-        step_prompt = (
-            f"## Task: {session.plan_task}\n\n"
-            f"## Current Step ({step.index}/{len(session.plan_steps)})\n{step.description}\n\n"
-            f"## Progress\n{compact_progress}\n"
-            "\nIMPORTANT: Just execute this step. Do NOT repeat completed steps or summarize."
-        )
+        step_prompt_parts = [
+            f"## Task: {session.plan_task}\n",
+            f"## Current Step ({step.index}/{len(session.plan_steps)})\n{step.description}\n",
+            f"## Progress\n{compact_progress}\n",
+            "IMPORTANT: Just execute this step. Do NOT repeat completed steps or summarize.",
+        ]
+        if file_context:
+            step_prompt_parts.insert(1, file_context)
+        step_prompt = "\n".join(step_prompt_parts)
 
         # Execute this step (lightweight=True to skip tree/git/history)
         executor = executor_factory()
@@ -1362,6 +1406,8 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
                 "anthropic": "anthropic/claude-haiku-4-5",
                 "openai": "openai/gpt-4o-mini",
                 "groq": "groq/llama-3.1-8b-instant",
+                "deepseek": "deepseek/deepseek-chat",
+                "ollama": "ollama/llama3.1",
             }
             small_ref = _small_defaults.get(provider_key, sess.model_ref)
         set_small_model_ref(small_ref)
@@ -1452,9 +1498,8 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
         user_input = _sanitize_input(paste_state.build_message(user_text))
 
         # Resolve @file mentions
-        resolved = _resolve_mentions(user_input, os.getcwd())
+        resolved, injected = _resolve_mentions(user_input, os.getcwd())
         if resolved != user_input:
-            injected = resolved.count("Contents of ")
             console.print(f"[dim]Attached {injected} file(s) from @ mentions[/dim]")
             user_input = resolved
 
@@ -1593,7 +1638,7 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
             # No need to manually inject session context into prompt; run_agent_capture will do it.
             prompt = task
 
-            plan_content = await run_agent_capture(planner, prompt, session)
+            plan_content = await run_agent_capture(planner, prompt, session, lightweight=True)
 
             if plan_content and config and config.plan_reviewer:
                 console.print("[dim]Reviewing scope...[/dim]")
