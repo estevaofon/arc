@@ -48,6 +48,10 @@ def set_skip_permissions(value: bool):
     _skip_permissions = value
 
 
+def get_skip_permissions() -> bool:
+    return _skip_permissions
+
+
 _small_model_ref: str = "anthropic/claude-haiku-4-5"  # Small model for sub-agents
 
 

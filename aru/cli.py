@@ -31,6 +31,7 @@ from rich.text import Text
 from aru.agents.executor import create_executor
 from aru.agents.planner import create_planner, review_plan
 from aru.config import AgentConfig, load_config, render_command_template
+from aru.tools.codebase import get_skip_permissions
 from aru.providers import (
     MODEL_ALIASES,
     create_model,
@@ -1517,12 +1518,12 @@ async def execute_plan_steps(session: Session, executor_factory) -> str | None:
             step.status = "failed"
             console.print(f"\n[yellow]Step {step.index} interrupted.[/yellow]")
             # Ask if user wants to continue with remaining steps
-            if not ask_yes_no("Continue with remaining steps?"):
+            if not get_skip_permissions() and not ask_yes_no("Continue with remaining steps?"):
                 break
         except Exception as e:
             step.status = "failed"
             console.print(f"\n[red]Step {step.index} failed: {e}[/red]")
-            if not ask_yes_no("Continue with remaining steps?"):
+            if not get_skip_permissions() and not ask_yes_no("Continue with remaining steps?"):
                 break
 
     # Final progress display
@@ -1819,7 +1820,7 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
                 if session.plan_steps:
                     console.print(f"\n[bold]{len(session.plan_steps)} steps detected.[/bold]")
 
-                if ask_yes_no("Execute this plan?"):
+                if get_skip_permissions() or ask_yes_no("Execute this plan?"):
                     console.print("[bold green]Executing plan...[/bold green]")
 
                     # Use lightweight instructions for executor steps (skip README.md)
