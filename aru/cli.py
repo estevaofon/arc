@@ -60,6 +60,59 @@ aru_logo = """
 """
 
 neon_green = "#39ff14" # Um verde bem "fósforo brilhante"
+shadow_green = "#042800"  # Verde bem escuro para sombra
+
+
+def _build_logo_with_shadow(logo_text: str) -> Text:
+    """Build logo Text with a drop-shadow effect for depth."""
+    lines = logo_text.strip("\n").split("\n")
+    # Pad all lines to same width
+    max_width = max(len(l) for l in lines)
+    lines = [l.ljust(max_width) for l in lines]
+
+    rows = len(lines)
+    cols = max_width
+
+    # Shadow offset: 1 row down, 1 col right
+    shadow_dy, shadow_dx = 1, 1
+    out_rows = rows + shadow_dy
+    out_cols = cols + shadow_dx
+
+    # Build grid: 'main' cells and 'shadow' cells
+    grid = [[" "] * out_cols for _ in range(out_rows)]
+    cell_type = [["empty"] * out_cols for _ in range(out_rows)]
+
+    # First pass: mark shadow cells
+    for r, line in enumerate(lines):
+        for c, ch in enumerate(line):
+            if ch != " ":
+                sr, sc = r + shadow_dy, c + shadow_dx
+                if cell_type[sr][sc] == "empty":
+                    grid[sr][sc] = ch
+                    cell_type[sr][sc] = "shadow"
+
+    # Second pass: mark main cells (overwrite shadow)
+    for r, line in enumerate(lines):
+        for c, ch in enumerate(line):
+            if ch != " ":
+                grid[r][c] = ch
+                cell_type[r][c] = "main"
+
+    # Render as Rich Text
+    result = Text("\n")
+    for r in range(out_rows):
+        result.append("  ")
+        for c in range(out_cols):
+            ch = grid[r][c]
+            ct = cell_type[r][c]
+            if ct == "main":
+                result.append(ch, style=f"bold {neon_green}")
+            elif ct == "shadow":
+                result.append(ch, style=shadow_green)
+            else:
+                result.append(ch)
+        result.append("\n")
+    return result
 
 # Default model reference (provider/model format)
 DEFAULT_MODEL = "anthropic/claude-sonnet-4-5"
@@ -151,9 +204,7 @@ def _render_home(session: "Session", skip_permissions: bool) -> None:
 
     from aru import __version__
 
-    logo = Text("\n")
-    for line in aru_logo.strip("\n").split("\n"):
-        logo.append("  " + line + "\n", style=f"bold {neon_green}")
+    logo = _build_logo_with_shadow(aru_logo)
     console.print(logo)
     console.print(
         Text.from_markup(f"  [dim]A coding agent powered by multiple LLM providers + Agno[/dim]  [bold {neon_green}]v{__version__}[/bold {neon_green}]"),
