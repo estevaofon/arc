@@ -441,6 +441,25 @@ def test_format_structure_with_decorators():
     assert "MyClass(Base)" in output
 
 
+def test_format_structure_with_globals():
+    """Test that _format_structure includes the globals section in output."""
+    structure = {
+        "imports": [],
+        "classes": [],
+        "functions": [],
+        "globals": [
+            {"name": "VERSION", "line": 1},
+            {"name": "MAX_RETRIES", "line": 2},
+        ],
+    }
+
+    output = _format_structure(structure, "config.py", 5)
+
+    assert "### Globals" in output
+    assert "VERSION" in output
+    assert "MAX_RETRIES" in output
+
+
 # --- code_structure Integration Tests ---
 
 def test_code_structure_file_not_found():
