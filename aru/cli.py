@@ -902,12 +902,12 @@ def create_general_agent(session: Session, config: AgentConfig | None = None):
         tools=GENERAL_TOOLS,
         instructions=_build_instructions("general", extra),
         markdown=True,
-        # Compress tool results after 4 uncompressed tool calls to save tokens
+        # Compress tool results after 7 uncompressed tool calls to save tokens
         compress_tool_results=True,
         compression_manager=CompressionManager(
             model=create_model(_get_small_model_ref(), max_tokens=1024),
             compress_tool_results=True,
-            compress_tool_results_limit=10,
+            compress_tool_results_limit=7,
         ),
         tool_call_limit=20,
     )
