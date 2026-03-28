@@ -454,6 +454,50 @@ class TestEditFiles:
         assert "not found" in result.lower()
         assert f1.read_text() == "alpha = 10"
 
+    def test_edit_files_multiple_edits(self, tmp_path):
+        """Test edit_files applying multiple search/replace edits across two temp files."""
+        f1 = tmp_path / "module_a.py"
+        f2 = tmp_path / "module_b.py"
+        f1.write_text(
+            "import os\n"
+            "import sys\n"
+            "\n"
+            "def greet(name):\n"
+            "    return f'Hello, {name}!'\n"
+        )
+        f2.write_text(
+            "DATABASE_URL = 'sqlite:///dev.db'\n"
+            "TIMEOUT = 30\n"
+            "RETRIES = 3\n"
+        )
+
+        edits = [
+            {"path": str(f1), "old_string": "import os\nimport sys", "new_string": "import os\nimport sys\nimport logging"},
+            {"path": str(f1), "old_string": "return f'Hello, {name}!'", "new_string": "return f'Hi, {name}!'"},
+            {"path": str(f2), "old_string": "DATABASE_URL = 'sqlite:///dev.db'", "new_string": "DATABASE_URL = 'postgresql:///prod.db'"},
+            {"path": str(f2), "old_string": "TIMEOUT = 30", "new_string": "TIMEOUT = 60"},
+        ]
+
+        set_skip_permissions(True)
+        try:
+            result = edit_files(edits)
+        finally:
+            set_skip_permissions(False)
+
+        assert "Successfully" in result
+
+        content_a = f1.read_text()
+        assert "import logging" in content_a
+        assert "return f'Hi, {name}!'" in content_a
+        assert "return f'Hello, {name}!'" not in content_a
+
+        content_b = f2.read_text()
+        assert "DATABASE_URL = 'postgresql:///prod.db'" in content_b
+        assert "TIMEOUT = 60" in content_b
+        assert "RETRIES = 3" in content_b
+        assert "sqlite" not in content_b
+        assert "TIMEOUT = 30" not in content_b
+
     def test_missing_path_key(self):
         edits = [{"old_string": "foo", "new_string": "bar"}]
 
