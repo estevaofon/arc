@@ -23,6 +23,7 @@ from rich.live import Live
 from rich.markdown import Markdown
 from rich.measure import Measurement
 from rich.panel import Panel
+from rich.rule import Rule
 from rich.spinner import Spinner
 from rich.syntax import Syntax
 from rich.text import Text
@@ -198,6 +199,12 @@ TIPS = [
 ]
 
 
+def _render_input_separator() -> None:
+    """Print a green separator line above the input prompt."""
+    console.print(Rule(style=f"dim {neon_green}"))
+
+
+
 def _render_home(session: "Session", skip_permissions: bool) -> None:
     """Render a clean home screen inspired by Claude Code."""
     from rich.table import Table
@@ -207,7 +214,7 @@ def _render_home(session: "Session", skip_permissions: bool) -> None:
     logo = _build_logo_with_shadow(aru_logo)
     console.print(logo)
     console.print(
-        Text.from_markup(f"  [dim]A coding agent powered by multiple LLM providers + Agno[/dim]  [bold {neon_green}]v{__version__}[/bold {neon_green}]"),
+        Text.from_markup(f"  [dim]A coding agent powered by OpenSource[/dim]  [bold {neon_green}]v{__version__}[/bold {neon_green}]"),
     )
     console.print()
 
@@ -416,7 +423,7 @@ def _create_prompt_session(paste_state: PasteState, config: AgentConfig | None =
                 event.current_buffer.insert_text(existing_text)
             # Dynamically enable toolbar now that paste exists
             session.bottom_toolbar = HTML(
-                f'  <b><style bg="ansiblue" fg="ansiwhite"> {paste_state.line_count} lines pasted </style></b>'
+                f'<style fg="ansicyan">│</style>  <b><style bg="ansiblue" fg="ansiwhite"> {paste_state.line_count} lines pasted </style></b>'
                 f'  <i><style fg="ansigray">Type a message about this paste, or press Enter to send as-is</style></i>'
             )
             event.app.invalidate()
@@ -1614,14 +1621,23 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
     while True:
         try:
             paste_state.clear()
-            prompt_session.bottom_toolbar = None
+            _render_input_separator()
+            model_tb = session.model_display
             user_text = (
                 await asyncio.to_thread(
                     prompt_session.prompt,
-                    HTML(f"<b><cyan>aru</cyan></b> <style fg='ansigray'>({session.model_display})</style><b><cyan>&gt;</cyan></b> "),
+                    HTML('<b><ansigreen>❯</ansigreen></b> '),
                     multiline=False,
+                    bottom_toolbar=HTML(
+                        f'  <style fg="ansigray">{model_tb}</style>'
+                        f'  <style fg="ansigray">│</style>'
+                        f'  <style fg="ansigray">/help</style>'
+                        f'  <style fg="ansigray">│</style>'
+                        f'  <style fg="ansigray">Esc+Enter newline</style>'
+                    ),
                 )
             ).strip()
+            _render_input_separator()
         except (EOFError, KeyboardInterrupt, asyncio.CancelledError):
             store.save(session)
             console.print(f"\n[dim]Session saved: {session.session_id}[/dim]")
