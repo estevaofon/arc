@@ -6,7 +6,7 @@ from aru.tools.codebase import (
     get_project_tree, _is_safe_command, _shell_split, _is_long_running,
     _html_to_text, clear_read_cache, set_on_file_mutation,
     reset_allowed_actions, _read_cache, _allowed_actions,
-    read_file_smart, _format_diff,
+    read_file_smart, _format_diff, get_skip_permissions,
 )
 
 
@@ -535,6 +535,33 @@ async def test_read_file_smart_below_threshold(tmp_path):
     # Should return raw content, not a model-generated answer
     assert "def add(a, b):" in result
     assert "return a + b" in result
+
+
+class TestSkipPermissions:
+    """Tests for set_skip_permissions / get_skip_permissions."""
+
+    def test_default_is_false(self):
+        """Initially skip_permissions is False."""
+        set_skip_permissions(False)
+        assert get_skip_permissions() is False
+
+    def test_set_true_and_read_back(self):
+        """Setting to True is reflected immediately by get_skip_permissions."""
+        original = get_skip_permissions()
+        try:
+            set_skip_permissions(True)
+            assert get_skip_permissions() is True
+        finally:
+            set_skip_permissions(original)
+
+    def test_set_false_and_read_back(self):
+        """Setting back to False is also reflected immediately."""
+        set_skip_permissions(True)
+        try:
+            set_skip_permissions(False)
+            assert get_skip_permissions() is False
+        finally:
+            set_skip_permissions(False)
 
 
 class TestFormatDiff:
