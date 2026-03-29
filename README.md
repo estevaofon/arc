@@ -21,7 +21,7 @@ An intelligent coding assistant for the terminal, powered by LLMs and [Agno](htt
 ### 1. Install
 
 ```bash
-pip install -e .
+pip install aru-code
 ```
 
 > **Requirements:** Python 3.13+
@@ -30,13 +30,7 @@ pip install -e .
 
 Aru uses **Claude Sonnet 4.6** from Anthropic as the default model. You need an [Anthropic API key](https://console.anthropic.com/) to get started.
 
-Create a `.env` file in the project root:
-
-```bash
-cp .env.example .env
-```
-
-Edit the `.env` with your key:
+Set your API key as an environment variable or create a `.env` file in your project directory:
 
 ```env
 ANTHROPIC_API_KEY=sk-ant-your-key-here
@@ -50,50 +44,7 @@ ANTHROPIC_API_KEY=sk-ant-your-key-here
 aru
 ```
 
-### Global Installation (run `aru` from anywhere)
-
-To use aru as a global command in the terminal, create a dedicated virtual environment and a wrapper script:
-
-<details>
-<summary><strong>Windows</strong></summary>
-
-1. Create the virtual environment and install:
-```bash
-python -m venv C:\aru-env
-C:\aru-env\Scripts\pip install -e C:\path\to\aru
-```
-
-2. Create `aru.bat` in a folder on your `PATH` (e.g., `C:\Users\<user>\bin\`):
-```bat
-@echo off
-C:\aru-env\Scripts\python -m aru.cli %*
-```
-
-</details>
-
-<details>
-<summary><strong>Linux / macOS</strong></summary>
-
-1. Create the virtual environment and install:
-```bash
-python3 -m venv ~/.aru-env
-~/.aru-env/bin/pip install -e /path/to/aru
-```
-
-2. Create the script `~/.local/bin/aru`:
-```bash
-#!/bin/bash
-~/.aru-env/bin/python -m aru.cli "$@"
-```
-
-3. Make it executable:
-```bash
-chmod +x ~/.local/bin/aru
-```
-
-</details>
-
-Done — now `aru` works from any directory.
+That's it — `aru` is available globally after install.
 
 ## Usage
 
@@ -143,15 +94,15 @@ By default, aru uses **Claude Sonnet 4.6** (Anthropic). You can switch to any su
 | Provider | Command | API Key (`.env`) | Extra Installation |
 |----------|---------|-------------------|------------------|
 | **Anthropic** | `/model anthropic/claude-sonnet-4-6` | `ANTHROPIC_API_KEY` | — (included) |
-| **Ollama** | `/model ollama/llama3.1` | — (local) | `pip install -e ".[ollama]"` |
-| **OpenAI** | `/model openai/gpt-4o` | `OPENAI_API_KEY` | `pip install -e ".[openai]"` |
-| **Groq** | `/model groq/llama-3.3-70b-versatile` | `GROQ_API_KEY` | `pip install -e ".[groq]"` |
-| **OpenRouter** | `/model openrouter/deepseek/deepseek-chat-v3-0324` | `OPENROUTER_API_KEY` | `pip install -e ".[openai]"` |
+| **Ollama** | `/model ollama/llama3.1` | — (local) | `pip install "aru-code[ollama]"` |
+| **OpenAI** | `/model openai/gpt-4o` | `OPENAI_API_KEY` | `pip install "aru-code[openai]"` |
+| **Groq** | `/model groq/llama-3.3-70b-versatile` | `GROQ_API_KEY` | `pip install "aru-code[groq]"` |
+| **OpenRouter** | `/model openrouter/deepseek/deepseek-chat-v3-0324` | `OPENROUTER_API_KEY` | `pip install "aru-code[openai]"` |
 
 To install all providers at once:
 
 ```bash
-pip install -e ".[all-providers]"
+pip install "aru-code[all-providers]"
 ```
 
 #### Ollama (local models)
@@ -326,7 +277,9 @@ aru-code/
 ## Development
 
 ```bash
-# Install with development dependencies
+# Clone and install in editable mode with dev dependencies
+git clone https://github.com/estevaofon/aru.git
+cd aru
 pip install -e ".[dev]"
 
 # Run tests
