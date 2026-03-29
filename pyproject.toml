@@ -1,11 +1,28 @@
+[build-system]
+requires = ["setuptools>=75.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "aru-code"
 version = "0.1.0"
 description = "A Claude Code clone built with Agno agents"
 readme = "README.md"
+license = "MIT"
 requires-python = ">=3.13"
+authors = [
+    { name = "Estevao", email = "estevaofon@gmail.com" },
+]
+keywords = ["ai", "coding-assistant", "claude", "cli", "agents"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+]
+
 dependencies = [
-    "agno",
+    "agno>=2.5.10,<3",
     "anthropic",
     "httpx",
     "pathspec>=0.12",
@@ -17,6 +34,11 @@ dependencies = [
     "mcp>=1.0",
     "openai>=2.29.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/estevaofon/aru"
+Repository = "https://github.com/estevaofon/aru"
+Issues = "https://github.com/estevaofon/aru/issues"
 
 [project.optional-dependencies]
 dev = [
