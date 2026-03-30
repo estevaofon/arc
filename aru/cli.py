@@ -1689,7 +1689,7 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
         """Sync the model IDs to the tools module from the session's model_ref."""
         set_model_id(sess.model_id)
         # Determine small model for sub-agents based on provider
-        small_ref = config.model_defaults.get("small") if config else None
+        small_ref = config.model_aliases.get("small") if config else None
         if not small_ref:
             provider_key, _ = resolve_model_ref(sess.model_ref)
             # Use same provider but pick a small/fast model
@@ -1742,8 +1742,8 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
     else:
         session = Session()
         # Apply default model from config if set
-        if config.model_defaults.get("default"):
-            session.model_ref = config.model_defaults["default"]
+        if config.default_model:
+            session.model_ref = config.default_model
         _sync_model(session)
         _render_home(session, skip_permissions)
 
@@ -1826,13 +1826,11 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
                 console.print(f"[bold]Current model:[/bold] {session.model_display} ({session.model_id})")
                 console.print()
                 # Show model aliases from aru.json
-                if config.model_defaults:
-                    non_default = {k: v for k, v in config.model_defaults.items() if k != "default"}
-                    if non_default:
-                        console.print("[bold]Model aliases (aru.json):[/bold]")
-                        for alias, ref in non_default.items():
-                            console.print(f"  [cyan]{alias}[/cyan] → {ref}")
-                        console.print()
+                if config.model_aliases:
+                    console.print("[bold]Model aliases (aru.json):[/bold]")
+                    for alias, ref in config.model_aliases.items():
+                        console.print(f"  [cyan]{alias}[/cyan] → {ref}")
+                    console.print()
                 console.print("[bold]Aliases:[/bold]")
                 for alias, ref in MODEL_ALIASES.items():
                     console.print(f"  [cyan]{alias}[/cyan] → {ref}")
@@ -1847,7 +1845,7 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
                 arg_lower = arg.lower()
                 try:
                     # Resolve config aliases (aru.json "models" section) first
-                    resolved_ref = config.model_defaults.get(arg_lower, arg_lower) if config.model_defaults else arg_lower
+                    resolved_ref = config.model_aliases.get(arg_lower, arg_lower) if config.model_aliases else arg_lower
                     # Validate the model reference resolves to a known provider
                     provider_key, model_name = resolve_model_ref(resolved_ref)
                     from aru.providers import get_provider

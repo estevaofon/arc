@@ -96,6 +96,7 @@ By default, aru uses **Claude Sonnet 4.6** (Anthropic). You can switch to any su
 | **OpenAI** | `/model openai/gpt-4o` | `OPENAI_API_KEY` | `pip install "aru-code[openai]"` |
 | **Groq** | `/model groq/llama-3.3-70b-versatile` | `GROQ_API_KEY` | `pip install "aru-code[groq]"` |
 | **OpenRouter** | `/model openrouter/deepseek/deepseek-chat-v3-0324` | `OPENROUTER_API_KEY` | `pip install "aru-code[openai]"` |
+| **MiniMax** | `/model openrouter/minimax/minimax-m2.7` | `OPENROUTER_API_KEY` | `pip install "aru-code[openai]"` |
 
 To install all providers at once:
 
@@ -121,9 +122,10 @@ You can set the default provider/model in `aru.json` so you don't need to switch
 
 ```json
 {
-  "models": {
-    "default": "openrouter/deepseek/deepseek-chat-v3-0324",
+  "default_model": "openrouter/minimax/minimax-m2.7",
+  "model_aliases": {
     "minimax": "openrouter/minimax/minimax-m2.5",
+    "minimax-m2.7": "openrouter/minimax/minimax-m2.7",
     "deepseek-v3": "openrouter/deepseek/deepseek-chat-v3-0324",
     "sonnet-4-6": "anthropic/claude-sonnet-4-6",
     "opus-4-6": "anthropic/claude-opus-4-6"
@@ -131,7 +133,7 @@ You can set the default provider/model in `aru.json` so you don't need to switch
 }
 ```
 
-The `default` field sets the main model. The other fields are aliases that can be used with `/model <alias>`.
+The `default_model` field sets the main model. The `model_aliases` are shortcuts that can be used with `/model <alias>`.
 
 #### Custom providers
 
@@ -142,12 +144,13 @@ You can configure custom providers with specific token limits:
   "providers": {
     "deepseek": {
       "models": {
-        "deepseek-chat-v3-0324": {"id": "deepseek-chat-v3-0324", "max_tokens": 16384}
+        "deepseek-chat-v3-0324": { "max_tokens": 16384 }
       }
     },
     "openrouter": {
       "models": {
-        "minimax/minimax-m2.5": {"id": "minimax/minimax-m2.5", "max_tokens": 65536}
+        "minimax/minimax-m2.5": { "max_tokens": 65536 },
+        "minimax/minimax-m2.7": { "max_tokens": 131072 }
       }
     }
   }

@@ -141,6 +141,11 @@ def load_providers_from_config(config_data: dict[str, Any]):
 
     Expected format in aru.json:
     {
+      "default_model": "anthropic/claude-sonnet-4-5",
+      "model_aliases": {
+        "small": "anthropic/claude-haiku-4-5",
+        "deepseek-v3": "openrouter/deepseek/deepseek-chat-v3-0324"
+      },
       "providers": {
         "ollama": {
           "base_url": "http://localhost:11434",
@@ -157,10 +162,6 @@ def load_providers_from_config(config_data: dict[str, Any]):
             "my-model": {"id": "my-model-v1"}
           }
         }
-      },
-      "models": {
-        "default": "anthropic/claude-sonnet-4-5",
-        "small": "anthropic/claude-haiku-4-5"
       }
     }
     """

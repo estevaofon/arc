@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aru-code"
-version = "0.3.0"
+version = "0.4.0"
 description = "A Claude Code clone built with Agno agents"
 readme = "README.md"
 license = "MIT"
@@ -35,6 +35,7 @@ dependencies = [
     "tree-sitter-python>=0.23",
     "mcp>=1.0",
     "openai>=2.29.0",
+    "pytest-asyncio>=1.3.0",
 ]
 
 [project.urls]
