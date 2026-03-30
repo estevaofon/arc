@@ -46,7 +46,8 @@ class AgentConfig:
     commands: dict[str, CustomCommand] = field(default_factory=dict)
     skills: dict[str, Skill] = field(default_factory=dict)
     permissions: dict[str, Any] = field(default_factory=dict)
-    model_defaults: dict[str, str] = field(default_factory=dict)
+    default_model: str | None = None
+    model_aliases: dict[str, str] = field(default_factory=dict)
     plan_reviewer: bool = True
 
     @property
@@ -213,12 +214,14 @@ def load_config(cwd: str | None = None) -> AgentConfig:
                     if "permission" in data:
                         config.permissions = data["permission"]
                     # Load provider configuration
-                    if "providers" in data or "models" in data:
+                    if "providers" in data:
                         from aru.providers import load_providers_from_config
                         load_providers_from_config(data)
-                    # Store model defaults for CLI
-                    if "models" in data and isinstance(data["models"], dict):
-                        config.model_defaults = data["models"]
+                    # Store default model and aliases for CLI
+                    if "default_model" in data:
+                        config.default_model = data["default_model"]
+                    if "model_aliases" in data and isinstance(data["model_aliases"], dict):
+                        config.model_aliases = data["model_aliases"]
                     if "plan_reviewer" in data:
                         config.plan_reviewer = bool(data["plan_reviewer"])
                 break
