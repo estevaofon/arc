@@ -4,8 +4,11 @@ import pytest
 from pathlib import Path
 from aru.config import (
     AgentConfig,
+    CustomAgent,
     CustomCommand,
     Skill,
+    _discover_agents,
+    _parse_agent_metadata,
     _parse_frontmatter,
     _parse_skill_metadata,
     render_command_template,
@@ -556,3 +559,177 @@ class TestRenderSkillTemplate:
             "foo bar"
         )
         assert result == "Full: foo bar, First: foo, Second: bar"
+
+
+class TestCustomAgent:
+    """Test CustomAgent dataclass."""
+
+    def test_custom_agent_creation(self):
+        agent = CustomAgent(
+            name="reviewer",
+            description="Review code",
+            system_prompt="You are a code reviewer.",
+            source_path="/path/to/reviewer.md",
+        )
+        assert agent.name == "reviewer"
+        assert agent.description == "Review code"
+        assert agent.system_prompt == "You are a code reviewer."
+        assert agent.model is None
+        assert agent.tools == []
+        assert agent.max_turns is None
+        assert agent.mode == "primary"
+
+    def test_custom_agent_with_all_fields(self):
+        agent = CustomAgent(
+            name="debugger",
+            description="Debug issues",
+            system_prompt="You are a debugger.",
+            source_path="/path",
+            model="anthropic/claude-sonnet-4-5",
+            tools=["read_file", "bash"],
+            max_turns=15,
+            mode="subagent",
+        )
+        assert agent.model == "anthropic/claude-sonnet-4-5"
+        assert agent.tools == ["read_file", "bash"]
+        assert agent.max_turns == 15
+        assert agent.mode == "subagent"
+
+
+class TestParseAgentMetadata:
+    """Test _parse_agent_metadata helper."""
+
+    def test_empty_metadata(self):
+        result = _parse_agent_metadata({})
+        assert result["name"] == ""
+        assert result["description"] == ""
+        assert result["model"] is None
+        assert result["mode"] == "primary"
+        assert result["max_turns"] is None
+        assert result["tools"] == []
+
+    def test_full_metadata(self):
+        result = _parse_agent_metadata({
+            "name": "reviewer",
+            "description": "Review code",
+            "model": "anthropic/claude-sonnet-4-5",
+            "mode": "subagent",
+            "max_turns": "15",
+            "tools": "read_file, bash, grep_search",
+        })
+        assert result["name"] == "reviewer"
+        assert result["description"] == "Review code"
+        assert result["model"] == "anthropic/claude-sonnet-4-5"
+        assert result["mode"] == "subagent"
+        assert result["max_turns"] == 15
+        assert result["tools"] == ["read_file", "bash", "grep_search"]
+
+    def test_tools_as_json_dict(self):
+        result = _parse_agent_metadata({
+            "tools": '{"bash": false, "write_file": true}',
+        })
+        assert result["tools"] == {"bash": False, "write_file": True}
+
+    def test_tools_empty(self):
+        result = _parse_agent_metadata({"tools": ""})
+        assert result["tools"] == []
+
+    def test_tools_invalid_json(self):
+        result = _parse_agent_metadata({"tools": "{invalid"})
+        assert result["tools"] == []
+
+    def test_max_turns_non_numeric(self):
+        result = _parse_agent_metadata({"max_turns": "abc"})
+        assert result["max_turns"] is None
+
+    def test_max_turns_hyphenated(self):
+        result = _parse_agent_metadata({"max-turns": "20"})
+        assert result["max_turns"] == 20
+
+    def test_mode_case_insensitive(self):
+        result = _parse_agent_metadata({"mode": "SUBAGENT"})
+        assert result["mode"] == "subagent"
+
+
+class TestDiscoverAgents:
+    """Test _discover_agents function."""
+
+    def test_discover_agents_empty(self, tmp_path):
+        agents = _discover_agents([tmp_path])
+        assert agents == {}
+
+    def test_discover_agents_no_agents_dir(self, tmp_path):
+        (tmp_path / "skills").mkdir()
+        agents = _discover_agents([tmp_path])
+        assert agents == {}
+
+    def test_discover_agents_single(self, tmp_path):
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        (agents_dir / "reviewer.md").write_text(
+            "---\nname: Code Reviewer\ndescription: Review code\n---\nYou are a reviewer."
+        )
+        agents = _discover_agents([tmp_path])
+        assert "reviewer" in agents
+        assert agents["reviewer"].name == "Code Reviewer"
+        assert agents["reviewer"].description == "Review code"
+        assert agents["reviewer"].system_prompt == "You are a reviewer."
+
+    def test_discover_agents_override(self, tmp_path):
+        global_root = tmp_path / "global"
+        local_root = tmp_path / "local"
+        for root in (global_root, local_root):
+            d = root / "agents"
+            d.mkdir(parents=True)
+
+        (global_root / "agents" / "reviewer.md").write_text(
+            "---\ndescription: Global reviewer\n---\nGlobal prompt"
+        )
+        (local_root / "agents" / "reviewer.md").write_text(
+            "---\ndescription: Local reviewer\n---\nLocal prompt"
+        )
+
+        agents = _discover_agents([global_root, local_root])
+        assert agents["reviewer"].description == "Local reviewer"
+        assert agents["reviewer"].system_prompt == "Local prompt"
+
+    def test_discover_agents_ignores_non_md(self, tmp_path):
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        (agents_dir / "valid.md").write_text("---\ndescription: Valid\n---\nPrompt")
+        (agents_dir / "invalid.txt").write_text("Not an agent")
+        (agents_dir / "also_invalid.py").write_text("Not an agent")
+
+        agents = _discover_agents([tmp_path])
+        assert len(agents) == 1
+        assert "valid" in agents
+
+    def test_discover_agents_skips_empty_body(self, tmp_path):
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        (agents_dir / "empty.md").write_text("---\ndescription: No body\n---\n")
+
+        agents = _discover_agents([tmp_path])
+        assert agents == {}
+
+    def test_discover_agents_with_tools(self, tmp_path):
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        (agents_dir / "reader.md").write_text(
+            "---\nname: Reader\ndescription: Read only\ntools: read_file, grep_search\nmode: subagent\n---\nRead stuff."
+        )
+
+        agents = _discover_agents([tmp_path])
+        assert agents["reader"].tools == ["read_file", "grep_search"]
+        assert agents["reader"].mode == "subagent"
+
+    def test_load_config_with_custom_agents(self, tmp_path):
+        agents_dir = tmp_path / ".agents" / "agents"
+        agents_dir.mkdir(parents=True)
+        (agents_dir / "reviewer.md").write_text(
+            "---\nname: Reviewer\ndescription: Review code\nmodel: anthropic/claude-sonnet-4-5\n---\nReview code."
+        )
+
+        config = load_config(str(tmp_path))
+        assert "reviewer" in config.custom_agents
+        assert config.custom_agents["reviewer"].model == "anthropic/claude-sonnet-4-5"

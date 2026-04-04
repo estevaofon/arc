@@ -39,6 +39,19 @@ class Skill:
     argument_hint: str = ""
 
 
+@dataclass
+class CustomAgent:
+    """A custom agent defined in .agents/agents/<name>.md."""
+    name: str
+    description: str
+    system_prompt: str
+    source_path: str
+    model: str | None = None
+    tools: list[str] | dict[str, bool] = field(default_factory=list)
+    max_turns: int | None = None
+    mode: str = "primary"  # "primary" | "subagent"
+
+
 MAX_README_CHARS = 2000  # Reduced from 8000 to save ~1.7K tokens per request
 
 
@@ -52,6 +65,7 @@ class AgentConfig:
     permissions: dict[str, Any] = field(default_factory=dict)
     default_model: str | None = None
     model_aliases: dict[str, str] = field(default_factory=dict)
+    custom_agents: dict[str, CustomAgent] = field(default_factory=dict)
     plan_reviewer: bool = True
 
     @property
@@ -128,6 +142,31 @@ def _parse_skill_metadata(metadata: dict[str, str]) -> dict[str, Any]:
         result["allowed_tools"] = [t.strip() for t in tools_str.split(",") if t.strip()]
     else:
         result["allowed_tools"] = []
+
+    return result
+
+
+def _parse_agent_metadata(metadata: dict[str, str]) -> dict[str, Any]:
+    """Interpret raw frontmatter strings into typed CustomAgent fields."""
+    result: dict[str, Any] = {}
+    result["name"] = metadata.get("name", "")
+    result["description"] = metadata.get("description", "")
+    result["model"] = metadata.get("model", None) or None
+    result["mode"] = metadata.get("mode", "primary").lower()
+
+    max_turns_str = metadata.get("max_turns", "") or metadata.get("max-turns", "")
+    result["max_turns"] = int(max_turns_str) if max_turns_str.strip().isdigit() else None
+
+    tools_str = metadata.get("tools", "").strip()
+    if not tools_str:
+        result["tools"] = []
+    elif tools_str.startswith("{"):
+        try:
+            result["tools"] = json.loads(tools_str)
+        except json.JSONDecodeError:
+            result["tools"] = []
+    else:
+        result["tools"] = [t.strip() for t in tools_str.split(",") if t.strip()]
 
     return result
 
@@ -211,6 +250,51 @@ def _discover_skills(search_roots: list[Path]) -> dict[str, Skill]:
     return skills
 
 
+def _discover_agents(search_roots: list[Path]) -> dict[str, CustomAgent]:
+    """Discover custom agents from agents/<name>.md files.
+
+    Later roots override earlier ones (project-local wins over global).
+    """
+    agents: dict[str, CustomAgent] = {}
+
+    for root in search_roots:
+        agents_dir = root / "agents"
+        if not agents_dir.is_dir():
+            continue
+
+        for filepath in sorted(agents_dir.iterdir()):
+            if filepath.suffix != ".md":
+                continue
+
+            try:
+                content = filepath.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+
+            raw_meta, body = _parse_frontmatter(content)
+            meta = _parse_agent_metadata(raw_meta)
+
+            dir_name = filepath.stem
+            agent_name = meta["name"] or dir_name
+            description = meta["description"] or f"Custom agent: {dir_name}"
+
+            if not body.strip():
+                continue
+
+            agents[dir_name] = CustomAgent(
+                name=agent_name,
+                description=description,
+                system_prompt=body,
+                source_path=str(filepath),
+                model=meta["model"],
+                tools=meta["tools"],
+                max_turns=meta["max_turns"],
+                mode=meta["mode"],
+            )
+
+    return agents
+
+
 def load_config(cwd: str | None = None) -> AgentConfig:
     """Load agent configuration from AGENTS.md and .agents/ directory.
 
@@ -265,6 +349,7 @@ def load_config(cwd: str | None = None) -> AgentConfig:
         if local_dir.is_dir():
             skill_roots.append(local_dir)
     config.skills = _discover_skills(skill_roots)
+    config.custom_agents = _discover_agents(skill_roots)
 
     # Load opencode-style config (aru.json or .aru/config.json)
     config_paths = [root / "aru.json", root / ".aru" / "config.json"]

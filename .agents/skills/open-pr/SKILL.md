@@ -19,21 +19,33 @@ Create a GitHub pull request for the current branch using `gh pr create`.
 
 3. **Analyze changes**: Read the changed files and commit messages to understand what was done.
 
-4. **Build the PR** using `gh pr create` with this exact template:
+4. **Build the PR description** by generating:
+   - Concise title under 70 chars
+   - Summary bullets (focus on **why**, not just what)
+   - Components list with affected files/modules
+   - Test Plan with checkboxes
 
-```
-gh pr create --base <base-branch> --title "<concise title under 70 chars>" --body "$(cat <<'EOF'
-## Summary
-- <bullet points describing what was done, focus on the why>
-
-## Components
-- <list affected components with paths and technical details>
-
-## Test Plan
-- [ ] Testes unitários passando
-- [ ] Testado localmente
-EOF
-)"
+5. **Create the PR** using one of these approaches:
+   
+   Option A - Pass body via stdin (recommended):
+   ```
+   gh pr create --base <base-branch> --title "<title>" --body-file /dev/stdin <<'EOF'
+   ## Summary
+   - ...
+   
+   ## Components
+   - ...
+   
+   ## Test Plan
+   - [ ] ...
+   EOF
+   ```
+   
+   Option B - Use a temp file:
+   ```
+   echo "## Summary..." > /tmp/pr_body.md
+   gh pr create --base <base-branch> --title "<title>" --body-file /tmp/pr_body.md
+   ```
 ```
 
 ## Rules
