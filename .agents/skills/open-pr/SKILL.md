@@ -52,9 +52,9 @@ Create a GitHub pull request for the current branch using `gh pr create`.
    git push -u origin HEAD
    ```
 
-7. **Create the PR** using a heredoc to pass the body inline without a temp file:
+7. **Create the PR** by piping the body via stdin to avoid temp files:
    ```
-   gh pr create --base <base-branch> --title "<title>" --body "$(cat <<'EOF'
+   cat <<'EOF' | gh pr create --base <base-branch> --title "<title>" --body-file -
    ## Summary
    - ...
 
@@ -64,17 +64,16 @@ Create a GitHub pull request for the current branch using `gh pr create`.
    ## Test Plan
    - [ ] ...
    EOF
-   )"
    ```
 
-   **CRITICAL**: Always use the `--body "$(cat <<'EOF' ... EOF)"` pattern. This avoids temp files and handles multiline markdown correctly. NEVER use `--body-file` or write temp files.
+   **CRITICAL**: Always pipe the body through stdin with `--body-file -`. This avoids temp files and handles multiline markdown correctly. NEVER use `--body` with inline text. NEVER create temp files.
 
 8. **Return the PR URL** shown in the `gh` output.
 
 ## Rules
 
-- ALWAYS use `--body "$(cat <<'EOF' ... EOF)"` to pass the PR body. NEVER create temp files.
-- NEVER use `echo` with quotes to build the body.
+- ALWAYS pipe the PR body via `cat <<'EOF' | gh pr create ... --body-file -`. NEVER create temp files.
+- NEVER use `--body` with inline text or heredoc substitution — it causes escaping issues.
 - Title must be under 72 characters, imperative mood, and synthesize the overall change.
 - Summary must focus on **why** and **impact**, not just restate file names or commit subjects.
 - If the diff is large, focus the summary on the most important changes.
