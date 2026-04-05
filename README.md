@@ -8,6 +8,7 @@ An intelligent coding assistant for the terminal, powered by LLMs and [Agno](htt
 
 - **Multi-Agent Architecture** — Specialized agents for planning, execution, and conversation
 - **Interactive CLI** — Streaming responses, multi-line paste, session management
+- **Image Support** — Attach images via `@` mentions for multimodal analysis (Claude, GPT-4o, Gemini)
 - **16 Integrated Tools** — File operations, code search, shell, web search, task delegation
 - **Task Planning** — Break down complex tasks into steps with automatic execution
 - **Multi-Provider** — Anthropic, OpenAI, Ollama, Groq, OpenRouter, DeepSeek, and others via custom configuration
@@ -83,6 +84,23 @@ aru> ! pytest tests/ -v
 
 aru> /model ollama/codellama
 ```
+
+### Image Support
+
+Attach images to your messages using the same `@` mention syntax used for files. Aru detects image files by extension and sends them to the LLM as visual content for multimodal analysis.
+
+**Supported formats:** `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.bmp`
+
+```
+aru> describe @screenshot.png
+aru> compare @before.png and @after.png
+aru> review @code.py and explain the diagram in @architecture.png
+aru> analyze @D:/full/path/to/image.jpg
+```
+
+Images are sent natively to the model via the provider's multimodal API — no base64 text is injected into the conversation. Works with any multimodal model (Claude Opus/Sonnet, GPT-4o, Gemini, etc.). The autocomplete shows an `[image]` label for image files.
+
+> **Note:** Images require a multimodal model. Local models via Ollama may not support image input. Maximum file size: 20MB.
 
 ## Configuration
 

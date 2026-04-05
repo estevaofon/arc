@@ -43,7 +43,8 @@ class AgentRunResult:
         return f"{self.content}\n\n[Tools]\n{tools_section}"
 
 
-async def run_agent_capture(agent, message: str, session=None, lightweight: bool = False) -> AgentRunResult:
+async def run_agent_capture(agent, message: str, session=None, lightweight: bool = False,
+                           images: list | None = None) -> AgentRunResult:
     """Run agent with async streaming display and parallel tool execution.
 
     Args:
@@ -51,6 +52,7 @@ async def run_agent_capture(agent, message: str, session=None, lightweight: bool
         message: The user message/prompt.
         session: Optional session for history and context.
         lightweight: If True, skip tree/git/plan context and history (for executor steps).
+        images: Optional list of agno.media.Image objects to attach.
 
     Returns:
         AgentRunResult with text output and list of tool call labels.
@@ -116,7 +118,7 @@ async def run_agent_capture(agent, message: str, session=None, lightweight: bool
 
         # Combine: history messages + current enriched message
         if history_messages:
-            history_messages.append(Message(role="user", content=run_message))
+            history_messages.append(Message(role="user", content=run_message, images=images or None))
             agent_input = history_messages
         else:
             agent_input = run_message
@@ -130,7 +132,10 @@ async def run_agent_capture(agent, message: str, session=None, lightweight: bool
             _stall_counter = 0
             _stalled = False
             _STALL_LIMIT = 20
-            async for event in agent.arun(agent_input, stream=True, stream_events=True, yield_run_output=True):
+            arun_kwargs = dict(stream=True, stream_events=True, yield_run_output=True)
+            if isinstance(agent_input, str) and images:
+                arun_kwargs["images"] = images
+            async for event in agent.arun(agent_input, **arun_kwargs):
                 if isinstance(event, RunOutput):
                     run_output = event
                     break
