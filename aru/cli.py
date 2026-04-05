@@ -230,9 +230,15 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
 
         # Resolve @file mentions (skip known agent names)
         _agent_names = set(config.custom_agents.keys()) if config.custom_agents else set()
-        resolved, injected = _resolve_mentions(user_input, os.getcwd(), _agent_names)
-        if resolved != user_input:
-            console.print(f"[dim]Attached {injected} file(s) from @ mentions[/dim]")
+        resolved, injected, attached_images = _resolve_mentions(user_input, os.getcwd(), _agent_names)
+        if injected > 0:
+            parts = []
+            text_count = injected - len(attached_images)
+            if text_count > 0:
+                parts.append(f"{text_count} file(s)")
+            if attached_images:
+                parts.append(f"{len(attached_images)} image(s)")
+            console.print(f"[dim]Attached {', '.join(parts)} from @ mentions[/dim]")
             user_input = resolved
 
         if paste_state.pasted_content and user_text:
@@ -441,7 +447,7 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
                 else:
                     agent = create_general_agent(session, config)
                 session.add_message("user", user_input)
-                run_result = await run_agent_capture(agent, prompt, session)
+                run_result = await run_agent_capture(agent, prompt, session, images=attached_images or None)
                 if run_result.content:
                     session.add_message("assistant", run_result.with_tools_summary())
             elif cmd_name in config.skills:
@@ -454,7 +460,7 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
 
                     agent = create_general_agent(session, config)
                     session.add_message("user", user_input)
-                    run_result = await run_agent_capture(agent, prompt, session)
+                    run_result = await run_agent_capture(agent, prompt, session, images=attached_images or None)
                     if run_result.content:
                         session.add_message("assistant", run_result.with_tools_summary())
             elif cmd_name in config.custom_agents:
@@ -467,7 +473,7 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
                     agent = create_custom_agent_instance(agent_def, session, config)
                     session.add_message("user", user_input)
                     with permission_scope(agent_def.permission):
-                        run_result = await run_agent_capture(agent, cmd_args or user_input, session)
+                        run_result = await run_agent_capture(agent, cmd_args or user_input, session, images=attached_images or None)
                     if run_result.content:
                         session.add_message("assistant", run_result.with_tools_summary())
             else:
@@ -495,13 +501,13 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
                 agent = create_custom_agent_instance(agent_def, session, config)
                 session.add_message("user", user_input)
                 with permission_scope(agent_def.permission):
-                    run_result = await run_agent_capture(agent, message_text, session)
+                    run_result = await run_agent_capture(agent, message_text, session, images=attached_images or None)
                 if run_result.content:
                     session.add_message("assistant", run_result.with_tools_summary())
             else:
                 agent = create_general_agent(session, config)
                 session.add_message("user", user_input)
-                run_result = await run_agent_capture(agent, user_input, session)
+                run_result = await run_agent_capture(agent, user_input, session, images=attached_images or None)
                 if run_result.content:
                     session.add_message("assistant", run_result.with_tools_summary())
 

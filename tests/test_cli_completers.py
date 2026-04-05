@@ -7,13 +7,17 @@ from unittest.mock import Mock, patch
 import pytest
 from prompt_toolkit.document import Document
 
+from agno.media import Image
+
 from aru.cli import (
     SlashCommandCompleter,
     FileMentionCompleter,
     AruCompleter,
     SLASH_COMMANDS,
     _extract_agent_mention,
+    _resolve_mentions,
 )
+from aru.completers import _IMAGE_EXTENSIONS
 from aru.config import CustomAgent, CustomCommand
 
 
@@ -594,3 +598,95 @@ class TestExtractAgentMention:
         agents = self._make_agents()
         # @reviewer preceded by non-whitespace should not match
         assert _extract_agent_mention("email@reviewer", agents) is None
+
+
+# ── Image mention support ──────────────────────────────────────────
+
+
+class TestImageMentions:
+    """Tests for image file detection in @mentions."""
+
+    def test_resolve_mentions_returns_three_tuple(self, tmp_path):
+        result = _resolve_mentions("hello", str(tmp_path))
+        assert len(result) == 3
+        text, count, images = result
+        assert text == "hello"
+        assert count == 0
+        assert images == []
+
+    def test_resolve_mentions_image_file(self, tmp_path):
+        img = tmp_path / "screenshot.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 100)
+
+        text, count, images = _resolve_mentions(
+            "analyze @screenshot.png", str(tmp_path)
+        )
+        assert count == 1
+        assert len(images) == 1
+        assert isinstance(images[0], Image)
+        assert images[0].id == "screenshot.png"
+        # Image content should NOT be appended as text
+        assert "```" not in text
+
+    def test_resolve_mentions_mixed_files_and_images(self, tmp_path):
+        (tmp_path / "code.py").write_text("print('hello')", encoding="utf-8")
+        (tmp_path / "diagram.jpg").write_bytes(b"\xff\xd8\xff" + b"\x00" * 100)
+
+        text, count, images = _resolve_mentions(
+            "review @code.py and @diagram.jpg", str(tmp_path)
+        )
+        assert count == 2
+        assert len(images) == 1
+        assert images[0].id == "diagram.jpg"
+        # Text file content should be appended
+        assert "print('hello')" in text
+
+    def test_resolve_mentions_multiple_images(self, tmp_path):
+        (tmp_path / "a.png").write_bytes(b"\x89PNG" + b"\x00" * 100)
+        (tmp_path / "b.webp").write_bytes(b"RIFF" + b"\x00" * 100)
+
+        text, count, images = _resolve_mentions(
+            "compare @a.png @b.webp", str(tmp_path)
+        )
+        assert count == 2
+        assert len(images) == 2
+
+    def test_resolve_mentions_image_too_large(self, tmp_path):
+        img = tmp_path / "huge.png"
+        # Write just over the 20MB limit header
+        img.write_bytes(b"\x89PNG" + b"\x00" * (20 * 1024 * 1024 + 1))
+
+        text, count, images = _resolve_mentions(
+            "analyze @huge.png", str(tmp_path)
+        )
+        assert count == 0
+        assert len(images) == 0
+
+    def test_resolve_mentions_all_image_extensions(self, tmp_path):
+        for ext in _IMAGE_EXTENSIONS:
+            fname = f"test{ext}"
+            (tmp_path / fname).write_bytes(b"\x00" * 100)
+
+        mentions = " ".join(f"@test{ext}" for ext in _IMAGE_EXTENSIONS)
+        text, count, images = _resolve_mentions(mentions, str(tmp_path))
+        assert len(images) == len(_IMAGE_EXTENSIONS)
+
+    def test_image_completer_shows_image_metadata(self, tmp_path):
+        (tmp_path / "photo.png").touch()
+        (tmp_path / "code.py").touch()
+
+        completer = FileMentionCompleter()
+        doc = Document("@")
+        with patch("os.getcwd", return_value=str(tmp_path)):
+            with patch("aru.tools.gitignore.is_ignored", return_value=False):
+                completions = list(completer.get_completions(doc, Mock()))
+
+        by_name = {c.text: c for c in completions}
+        assert "photo.png" in by_name
+        assert "code.py" in by_name
+        # Image should have "image" in metadata
+        photo_meta = str(by_name["photo.png"].display_meta)
+        assert "image" in photo_meta
+        # Code file should NOT have "image" in metadata
+        code_meta = str(by_name["code.py"].display_meta)
+        assert "image" not in code_meta

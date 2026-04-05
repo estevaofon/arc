@@ -12,25 +12,31 @@ from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
 
+from agno.media import Image
+
 from aru.commands import SLASH_COMMANDS
 from aru.config import AgentConfig
 
-_MENTION_RE = re.compile(r'(?<!\S)@([a-zA-Z0-9_./\\-]+)')
+_MENTION_RE = re.compile(r'(?<!\S)@([a-zA-Z0-9_./\\:-]+)')
 _MENTION_MAX_SIZE = 30_000  # bytes, same limit as read_file
+_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
+_IMAGE_MAX_SIZE = 20 * 1024 * 1024  # 20MB
 
 
-def _resolve_mentions(text: str, cwd: str, agent_names: set[str] | None = None) -> tuple[str, int]:
+def _resolve_mentions(text: str, cwd: str, agent_names: set[str] | None = None) -> tuple[str, int, list[Image]]:
     """Resolve @file mentions by appending file contents to the message.
 
+    Image files (png, jpg, etc.) are returned as Image objects instead of text.
     Skips @mentions that match known agent names.
-    Returns (resolved_text, number_of_files_attached).
+    Returns (resolved_text, number_of_files_attached, images).
     """
     agent_names = agent_names or set()
     matches = list(_MENTION_RE.finditer(text))
     if not matches:
-        return text, 0
+        return text, 0, []
 
     appendix_parts = []
+    images: list[Image] = []
     seen = set()
     for m in matches:
         rel_path = m.group(1)
@@ -39,9 +45,21 @@ def _resolve_mentions(text: str, cwd: str, agent_names: set[str] | None = None) 
         if rel_path in seen:
             continue
         seen.add(rel_path)
-        abs_path = os.path.join(cwd, rel_path)
+        abs_path = rel_path if os.path.isabs(rel_path) else os.path.join(cwd, rel_path)
         if not os.path.isfile(abs_path):
             continue
+
+        ext = os.path.splitext(rel_path)[1].lower()
+        if ext in _IMAGE_EXTENSIONS:
+            try:
+                size = os.path.getsize(abs_path)
+                if size > _IMAGE_MAX_SIZE:
+                    continue
+                images.append(Image(filepath=abs_path, id=rel_path))
+            except OSError:
+                pass
+            continue
+
         try:
             size = os.path.getsize(abs_path)
             with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
@@ -57,9 +75,10 @@ def _resolve_mentions(text: str, cwd: str, agent_names: set[str] | None = None) 
         except OSError:
             continue
 
+    attached = len(appendix_parts) + len(images)
     if appendix_parts:
-        return text + "".join(appendix_parts), len(appendix_parts)
-    return text, 0
+        return text + "".join(appendix_parts), attached, images
+    return text, attached, images
 
 
 def _extract_agent_mention(
@@ -206,7 +225,9 @@ class FileMentionCompleter(Completer):
 
             is_dir = os.path.isdir(full_path)
             display_text = rel_prefix + entry + ("/" if is_dir else "")
-            meta = "dir" if is_dir else ""
+            file_ext = os.path.splitext(entry)[1].lower()
+            is_image = not is_dir and file_ext in _IMAGE_EXTENSIONS
+            meta = "dir" if is_dir else ("image" if is_image else "")
 
             yield Completion(
                 display_text,

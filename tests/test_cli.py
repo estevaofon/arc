@@ -46,32 +46,32 @@ class TestSanitizeInput:
 
 class TestResolveMentions:
     def test_no_mentions(self, tmp_path):
-        result, count = _resolve_mentions("hello world", str(tmp_path))
+        result, count, _imgs = _resolve_mentions("hello world", str(tmp_path))
         assert result == "hello world"
         assert count == 0
 
     def test_resolves_file_mention(self, tmp_path):
         (tmp_path / "config.py").write_text("DEBUG = True")
-        result, count = _resolve_mentions("check @config.py", str(tmp_path))
+        result, count, _imgs = _resolve_mentions("check @config.py", str(tmp_path))
         assert "DEBUG = True" in result
         assert "Contents of config.py" in result
         assert count == 1
 
     def test_nonexistent_file_ignored(self, tmp_path):
-        result, count = _resolve_mentions("check @missing.py", str(tmp_path))
+        result, count, _imgs = _resolve_mentions("check @missing.py", str(tmp_path))
         assert result == "check @missing.py"
         assert count == 0
 
     def test_deduplicates_mentions(self, tmp_path):
         (tmp_path / "file.py").write_text("code")
-        result, count = _resolve_mentions("@file.py and @file.py", str(tmp_path))
+        result, count, _imgs = _resolve_mentions("@file.py and @file.py", str(tmp_path))
         assert result.count("Contents of file.py") == 1
         assert count == 1
 
     def test_multiple_files(self, tmp_path):
         (tmp_path / "a.py").write_text("aaa")
         (tmp_path / "b.py").write_text("bbb")
-        result, count = _resolve_mentions("@a.py and @b.py", str(tmp_path))
+        result, count, _imgs = _resolve_mentions("@a.py and @b.py", str(tmp_path))
         assert "Contents of a.py" in result
         assert "Contents of b.py" in result
         assert count == 2
