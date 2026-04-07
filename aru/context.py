@@ -10,12 +10,16 @@ from __future__ import annotations
 
 # ── Constants ──────────────────────────────────────────────────────
 
-# Pruning: protect the most recent N chars of assistant content from eviction
+# Pruning: protect the most recent N chars of content from eviction
 PRUNE_PROTECT_CHARS = 50_000  # ~14K tokens
 # Pruning: minimum chars that must be freeable to justify a prune pass
 PRUNE_MINIMUM_CHARS = 20_000  # ~5.7K tokens
 # Placeholder that replaces evicted content
 PRUNED_PLACEHOLDER = "[previous output cleared to save context]"
+# User messages larger than this threshold are truncated when outside protection window
+PRUNE_USER_MSG_THRESHOLD = 2_000  # ~570 tokens — catches @file mentions
+# How many chars to keep from the start of a pruned user message
+PRUNE_USER_MSG_KEEP = 500  # ~140 tokens — enough to understand the request
 
 # Truncation: universal limits for any tool output
 TRUNCATE_MAX_LINES = 500
@@ -80,24 +84,24 @@ Be concise but complete. This summary replaces the full conversation history."""
 # ── Layer 1: Pruning ──────────────────────────────────────────────
 
 def prune_history(history: list[dict[str, str]]) -> list[dict[str, str]]:
-    """Replace old assistant messages with a short placeholder to reduce tokens.
+    """Replace old messages with a short placeholder to reduce tokens.
 
-    Walks backward through history, protecting the most recent assistant
-    content (up to PRUNE_PROTECT_CHARS). Older assistant messages beyond
-    that budget are replaced with a compact placeholder.
+    Walks backward through history, protecting the most recent content
+    (up to PRUNE_PROTECT_CHARS total across both roles). Older messages
+    beyond that budget are pruned:
+    - Assistant messages: replaced entirely with placeholder
+    - User messages over PRUNE_USER_MSG_THRESHOLD: truncated to first N chars
 
     Returns a new list (does not mutate the input).
     """
     if len(history) <= 2:
         return list(history)
 
-    # Calculate total assistant chars
-    total_assistant_chars = sum(
-        len(msg["content"]) for msg in history if msg["role"] == "assistant"
-    )
+    # Calculate total prunable chars (both roles)
+    total_chars = sum(len(msg["content"]) for msg in history)
 
     # Not enough to prune
-    if total_assistant_chars < PRUNE_PROTECT_CHARS + PRUNE_MINIMUM_CHARS:
+    if total_chars < PRUNE_PROTECT_CHARS + PRUNE_MINIMUM_CHARS:
         return list(history)
 
     # Walk backward, protecting recent content
@@ -106,17 +110,22 @@ def prune_history(history: list[dict[str, str]]) -> list[dict[str, str]]:
 
     for i in range(len(result) - 1, -1, -1):
         msg = result[i]
-        if msg["role"] != "assistant":
-            continue
-
         msg_len = len(msg["content"])
+
         if protected + msg_len <= PRUNE_PROTECT_CHARS:
             # Still within protection window
             protected += msg_len
         else:
-            # Beyond protection window — prune this message
-            if msg["content"] != PRUNED_PLACEHOLDER:
-                result[i] = {"role": "assistant", "content": PRUNED_PLACEHOLDER}
+            # Beyond protection window — prune
+            if msg["role"] == "assistant":
+                if msg["content"] != PRUNED_PLACEHOLDER:
+                    result[i] = {"role": "assistant", "content": PRUNED_PLACEHOLDER}
+            elif msg["role"] == "user" and msg_len > PRUNE_USER_MSG_THRESHOLD:
+                # Large user messages (e.g. @file mentions with file contents)
+                # are truncated to keep a brief summary of the original request
+                truncated = msg["content"][:PRUNE_USER_MSG_KEEP] + \
+                    f"\n\n[... {msg_len - PRUNE_USER_MSG_KEEP:,} chars pruned to save context ...]"
+                result[i] = {"role": "user", "content": truncated}
 
     return result
 
