@@ -1232,7 +1232,7 @@ async def load_mcp_tools(eager: bool = False):
         if eager:
             # Legacy: each MCP tool = one Agno Function (expensive)
             mcp_tools = manager.get_eager_tools()
-            get_ctx().console.print(f"[dim]Loaded {tool_count} tools from MCP servers (eager mode).[/dim]")
+            get_ctx().mcp_loaded_msg = f"Loaded {tool_count} tools from MCP servers (eager mode)."
             for t in mcp_tools:
                 ALL_TOOLS.append(t)
                 EXECUTOR_TOOLS.append(t)
@@ -1245,10 +1245,10 @@ async def load_mcp_tools(eager: bool = False):
             GENERAL_TOOLS.append(gateway)
             # Store catalog text for injection into system prompt
             get_ctx().mcp_catalog_text = manager.get_catalog_text()
-            get_ctx().console.print(f"[dim]Loaded {tool_count} tools from MCP servers.[/dim]")
+            get_ctx().mcp_loaded_msg = f"Loaded {tool_count} tools from MCP servers."
 
     except Exception as e:
-        get_ctx().console.print(f"[dim]Failed to load MCP tools: {e}[/dim]")
+        get_ctx().mcp_loaded_msg = f"Failed to load MCP tools: {e}"
 
 
 def _build_mcp_gateway(manager):

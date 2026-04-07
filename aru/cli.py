@@ -214,18 +214,29 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
             _render_input_separator()
             model_tb = session.model_display
             from prompt_toolkit.formatted_text import HTML
+
+            def _bottom_toolbar():
+                mcp_part = ""
+                if ctx.mcp_loaded_msg:
+                    mcp_part = (
+                        f'  <style fg="ansigray">│</style>'
+                        f'  <style fg="ansigray">{ctx.mcp_loaded_msg}</style>'
+                    )
+                return HTML(
+                    f'  <style fg="ansigray">{model_tb}</style>'
+                    f'  <style fg="ansigray">│</style>'
+                    f'  <style fg="ansigray">/help</style>'
+                    f'  <style fg="ansigray">│</style>'
+                    f'  <style fg="ansigray">Esc+Enter newline</style>'
+                    f'{mcp_part}'
+                )
+
             user_text = (
                 await asyncio.to_thread(
                     prompt_session.prompt,
                     HTML('<b><ansigreen>❯</ansigreen></b> '),
                     multiline=False,
-                    bottom_toolbar=HTML(
-                        f'  <style fg="ansigray">{model_tb}</style>'
-                        f'  <style fg="ansigray">│</style>'
-                        f'  <style fg="ansigray">/help</style>'
-                        f'  <style fg="ansigray">│</style>'
-                        f'  <style fg="ansigray">Esc+Enter newline</style>'
-                    ),
+                    bottom_toolbar=_bottom_toolbar,
                 )
             ).strip()
             _render_input_separator()

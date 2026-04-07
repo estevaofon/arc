@@ -117,6 +117,7 @@ class RuntimeContext:
 
     # -- MCP --
     mcp_catalog_text: str = ""
+    mcp_loaded_msg: str = ""
 
 
 # ── ContextVar plumbing ──────────────────────────────────────────────
