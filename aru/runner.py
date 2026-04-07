@@ -26,6 +26,24 @@ from aru.permissions import get_skip_permissions
 _MUTATION_TOOLS = {"write_file", "write_files", "edit_file", "edit_files", "bash", "run_command"}
 
 
+def build_env_context(session, cwd: str | None = None) -> str:
+    """Build environment context string (cwd, git status) for system prompt.
+
+    This context goes into agent instructions (system prompt) so it's cached
+    by the provider between turns. Tree is omitted — the model uses
+    glob_search/list_directory on demand instead of paying upfront tokens.
+    """
+    cwd = cwd or os.getcwd()
+    parts = [f"The current working directory is: {cwd}"]
+
+    if session:
+        git_status = session.get_cached_git_status(cwd)
+        if git_status:
+            parts.append(f"Git status:\n{git_status}")
+
+    return "\n\n".join(parts)
+
+
 @dataclass
 class AgentRunResult:
     """Result from run_agent_capture including text output and tool call history."""
@@ -77,35 +95,24 @@ async def run_agent_capture(agent, message: str, session=None, lightweight: bool
         display = StreamingDisplay(status)
         tracker = display.tool_tracker
 
-        # Build enriched message with environment context (using cache)
-        dynamic_parts = []
-        cwd = os.getcwd()
-        dynamic_parts.append(f"The current working directory is: {cwd}")
+        # Build message — environment context (tree/git/cwd) is now in the
+        # system prompt (agent instructions) so it's cacheable across turns.
+        # Only plan progress and budget warnings are added here.
+        msg_parts = []
 
         if session and not lightweight:
-            env_context_parts = []
-            tree_text = session.get_cached_tree(cwd)
-            if tree_text:
-                env_context_parts.append(f"Directory Tree (max depth 3):\n```text\n{tree_text}\n```")
-
-            git_status = session.get_cached_git_status(cwd)
-            if git_status:
-                env_context_parts.append(f"Git status:\n{git_status}")
-
-            if env_context_parts:
-                dynamic_parts.append("## Environment Context\n" + "\n\n".join(env_context_parts))
-
-            # Include only compact plan progress (not full plan text)
             if session.current_plan:
-                dynamic_parts.append(f"## Active Plan\nTask: {session.plan_task}\n\n{session.render_plan_progress()}")
+                msg_parts.append(f"## Active Plan\nTask: {session.plan_task}\n\n{session.render_plan_progress()}")
 
-            # Token budget warning
             warning = session.check_budget_warning()
             if warning:
                 console.print(warning)
 
-        dynamic_context = "\n\n".join(dynamic_parts)
-        run_message = f"{dynamic_context}\n\n---\n\n## Current Task/Message\n{message}"
+        if msg_parts:
+            prefix = "\n\n".join(msg_parts)
+            run_message = f"{prefix}\n\n---\n\n{message}"
+        else:
+            run_message = message
 
         # Build conversation history as real messages for the LLM
         from aru.context import prune_history

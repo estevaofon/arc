@@ -632,8 +632,10 @@ def get_project_tree(root_dir: str, max_depth: int = 3, max_files_per_dir: int =
             lines.append(f"{file_indent}{f}")
             
     result = "\n".join(lines)
-    if len(result) > 15000:
-        return result[:15000] + "\n... [Tree truncated due to size]"
+    # Cap size — tree goes in system prompt now, keep it compact
+    max_chars = 5000
+    if len(result) > max_chars:
+        return result[:max_chars] + "\n... [Tree truncated due to size]"
     return result
 
 
@@ -1098,15 +1100,12 @@ ALL_TOOLS = [
     web_search,
     web_fetch,
     delegate_task,
-    code_structure,
-    find_dependencies,
-    rank_files,
 ]
 
 # Task list tools for executor subtask tracking
 from aru.tools.tasklist import create_task_list, update_task
 
-# Executor tools — full write/execute capability, no discovery overhead
+# Executor tools — full write/execute capability
 EXECUTOR_TOOLS = [
     create_task_list,
     update_task,
@@ -1123,10 +1122,9 @@ EXECUTOR_TOOLS = [
     web_search,
     web_fetch,
     delegate_task,
-    code_structure,
 ]
 
-# General-purpose tools — everything except niche analysis tools
+# General-purpose tools
 GENERAL_TOOLS = [
     read_file,
     read_file_smart,
@@ -1147,6 +1145,10 @@ GENERAL_TOOLS = [
 TOOL_REGISTRY: dict[str, object] = {f.__name__: f for f in ALL_TOOLS}
 TOOL_REGISTRY["create_task_list"] = create_task_list
 TOOL_REGISTRY["update_task"] = update_task
+# Kept in registry for custom agents that may reference them via resolve_tools
+TOOL_REGISTRY["code_structure"] = code_structure
+TOOL_REGISTRY["find_dependencies"] = find_dependencies
+TOOL_REGISTRY["rank_files"] = rank_files
 
 
 def resolve_tools(tool_spec: list[str] | dict[str, bool]) -> list:

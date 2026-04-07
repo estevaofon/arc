@@ -71,6 +71,7 @@ from aru.runner import (  # noqa: F401
     _MUTATION_TOOLS,
     _build_file_context,
     _extract_plan_file_paths,
+    build_env_context,
     execute_plan_steps,
     run_agent_capture,
 )
@@ -156,6 +157,11 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
 
     extra_instructions = config.get_extra_instructions()
 
+    def _build_env_ctx() -> str:
+        """Build fresh environment context for agent system prompt."""
+        from aru.runner import build_env_context
+        return build_env_context(session)
+
     # Resume or create session
     if resume_id:
         if resume_id == "last":
@@ -182,6 +188,9 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
             session.model_ref = config.default_model
         _sync_model(session)
         _render_home(session, skip_permissions)
+
+    # Apply tree_depth from config
+    session._tree_max_depth = config.tree_depth
 
     # Wire file-mutation callback and atexit cleanup
     ctx.on_file_mutation = session.invalidate_context_cache
@@ -438,16 +447,17 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
                 prompt = render_command_template(cmd_def.template, cmd_args)
                 console.print(f"[bold magenta]Running /{cmd_name}...[/bold magenta]")
 
+                env_ctx = _build_env_ctx()
                 if cmd_def.agent and cmd_def.agent in config.custom_agents:
                     agent_def = config.custom_agents[cmd_def.agent]
-                    agent = create_custom_agent_instance(agent_def, session, config)
+                    agent = create_custom_agent_instance(agent_def, session, config, env_context=env_ctx)
                 elif cmd_def.agent:
                     console.print(f"[yellow]Warning: agent '{cmd_def.agent}' not found, using default[/yellow]")
-                    agent = create_general_agent(session, config, model_override=cmd_def.model)
+                    agent = create_general_agent(session, config, model_override=cmd_def.model, env_context=env_ctx)
                 elif cmd_def.model:
-                    agent = create_general_agent(session, config, model_override=cmd_def.model)
+                    agent = create_general_agent(session, config, model_override=cmd_def.model, env_context=env_ctx)
                 else:
-                    agent = create_general_agent(session, config)
+                    agent = create_general_agent(session, config, env_context=env_ctx)
                 session.add_message("user", user_input)
                 run_result = await run_agent_capture(agent, prompt, session, images=attached_images or None)
                 if run_result.content:
@@ -460,7 +470,7 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
                     prompt = render_skill_template(skill.content, cmd_args)
                     console.print(f"[bold magenta]Running skill /{cmd_name}...[/bold magenta]")
 
-                    agent = create_general_agent(session, config)
+                    agent = create_general_agent(session, config, env_context=_build_env_ctx())
                     session.add_message("user", user_input)
                     run_result = await run_agent_capture(agent, prompt, session, images=attached_images or None)
                     if run_result.content:
@@ -472,7 +482,7 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
                 else:
                     from aru.permissions import permission_scope
                     console.print(f"[bold magenta]Running agent /{cmd_name}...[/bold magenta]")
-                    agent = create_custom_agent_instance(agent_def, session, config)
+                    agent = create_custom_agent_instance(agent_def, session, config, env_context=_build_env_ctx())
                     session.add_message("user", user_input)
                     with permission_scope(agent_def.permission):
                         run_result = await run_agent_capture(agent, cmd_args or user_input, session, images=attached_images or None)
@@ -500,14 +510,14 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
                 agent_def = config.custom_agents[agent_name]
                 from aru.permissions import permission_scope
                 console.print(f"[bold magenta]Routing to @{agent_name}...[/bold magenta]")
-                agent = create_custom_agent_instance(agent_def, session, config)
+                agent = create_custom_agent_instance(agent_def, session, config, env_context=_build_env_ctx())
                 session.add_message("user", user_input)
                 with permission_scope(agent_def.permission):
                     run_result = await run_agent_capture(agent, message_text, session, images=attached_images or None)
                 if run_result.content:
                     session.add_message("assistant", run_result.with_tools_summary())
             else:
-                agent = create_general_agent(session, config)
+                agent = create_general_agent(session, config, env_context=_build_env_ctx())
                 session.add_message("user", user_input)
                 run_result = await run_agent_capture(agent, user_input, session, images=attached_images or None)
                 if run_result.content:

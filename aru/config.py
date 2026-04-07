@@ -160,6 +160,7 @@ class AgentConfig:
     model_aliases: dict[str, str] = field(default_factory=dict)
     custom_agents: dict[str, CustomAgent] = field(default_factory=dict)
     plan_reviewer: bool = True
+    tree_depth: int = 2  # max depth for directory tree in system prompt
 
     @property
     def has_instructions(self) -> bool:
@@ -515,6 +516,10 @@ def load_config(cwd: str | None = None) -> AgentConfig:
                         config.model_aliases = data["model_aliases"]
                     if "plan_reviewer" in data:
                         config.plan_reviewer = bool(data["plan_reviewer"])
+                    if "tree_depth" in data:
+                        td = data["tree_depth"]
+                        if isinstance(td, int) and 0 <= td <= 5:
+                            config.tree_depth = td
                     # Resolve instructions (local files, globs, URLs)
                     if "instructions" in data and isinstance(data["instructions"], list):
                         entries = [str(e) for e in data["instructions"] if isinstance(e, str)]

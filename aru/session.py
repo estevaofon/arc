@@ -145,6 +145,8 @@ class Session:
         self._cached_tree: str | None = None
         self._cached_git_status: str | None = None
         self._context_dirty: bool = True
+        # Tree depth for env context (configurable via aru.json "tree_depth")
+        self._tree_max_depth: int = 2
         # Token budget (0 = unlimited)
         self.token_budget: int = 0
 
@@ -229,7 +231,7 @@ class Session:
         """Regenerate tree and git status caches."""
         try:
             from aru.tools.codebase import get_project_tree
-            self._cached_tree = get_project_tree(cwd, max_depth=3) or None
+            self._cached_tree = get_project_tree(cwd, max_depth=self._tree_max_depth) or None
         except Exception:
             self._cached_tree = None
         try:
