@@ -552,7 +552,7 @@ def load_config(cwd: str | None = None) -> AgentConfig:
     # Load config: global (~/.aru/config.json) first, then project-level on top.
     # Project values override global values via deep merge.
     home = Path.home()
-    global_config_paths = [home / ".aru" / "config.json"]
+    global_config_paths = [home / ".aru" / "aru.json", home / ".aru" / "config.json"]
     project_config_paths = [root / "aru.json", root / ".aru" / "config.json"]
 
     merged_data: dict = {}

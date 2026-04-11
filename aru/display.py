@@ -204,6 +204,7 @@ TOOL_DISPLAY_NAMES = {
     "list_directory": "List",
     "bash": "Bash",
     "rank_files": "Rank",
+    "delegate_task": "Agent",
 }
 
 TOOL_PRIMARY_ARG = {
@@ -216,6 +217,12 @@ TOOL_PRIMARY_ARG = {
     "list_directory": "directory",
     "bash": "command",
     "rank_files": "task",
+    "delegate_task": "task",
+}
+
+# Agent type display names for delegate_task
+_AGENT_TYPE_LABELS = {
+    "explorer": "Explorer",
 }
 
 
@@ -224,6 +231,17 @@ def _format_tool_label(tool_name: str, tool_args: dict | None) -> str:
     display = TOOL_DISPLAY_NAMES.get(tool_name, tool_name)
     if not tool_args:
         return display
+
+    # Special handling for delegate_task — show agent type and task summary
+    if tool_name == "delegate_task":
+        agent = str(tool_args.get("agent_name", "") or tool_args.get("agent", ""))
+        agent_label = _AGENT_TYPE_LABELS.get(agent, agent.title() if agent else "SubAgent")
+        task = str(tool_args.get("task", ""))
+        # Extract first meaningful line/sentence as summary
+        summary = task.split("\n")[0].strip()
+        if len(summary) > 60:
+            summary = summary[:57] + "..."
+        return f"{agent_label}({summary})" if summary else agent_label
 
     primary_key = TOOL_PRIMARY_ARG.get(tool_name)
     if primary_key and primary_key in tool_args:

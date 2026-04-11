@@ -623,7 +623,7 @@ class TestDelegateTaskDocstring:
         }
         set_custom_agents(agents)
         doc = delegate_task.__doc__
-        assert 'agent="reviewer"' in doc
+        assert 'agent_name="reviewer"' in doc
         assert "Review code for quality" in doc
         # Primary agents should not be listed (only subagents are registered)
         assert "Primary" not in doc

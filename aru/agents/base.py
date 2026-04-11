@@ -161,7 +161,10 @@ Use `context_lines=30` for full function bodies.
 
 **Batch independent tool calls**: emit ALL independent tool calls in a single response.
 
-Use delegate_task to split work into independent subtasks for parallel execution.
+Use delegate_task to split work into independent subtasks for parallel execution. \
+For broad codebase exploration (searching many files, finding patterns, understanding code), \
+break the research into focused questions and spawn multiple \
+`delegate_task(task="<specific search>", agent_name="explorer")` calls in parallel.
 
 When given a plan, execute it step by step. When given a direct task, figure out what needs to be done and do it.
 **ZERO narration between tool calls.** No "Now I have enough context...", \
@@ -208,7 +211,34 @@ Batch what you need upfront, then execute.
 
 **When adding or modifying unit tests, ALWAYS run them to verify they pass before finishing.**
 
-Use delegate_task to split work into independent subtasks for parallel execution.\
+## Delegation strategy — CRITICAL for context efficiency
+
+For simple, directed lookups (one known file, one specific symbol) use \
+`grep_search` / `glob_search` / `read_file` directly.
+
+For **anything broader** — understanding a system, researching before implementing, \
+analyzing multiple files, writing specs or documentation — **always use explorer agents**. \
+Every `read_file` / `read_file_smart` / `grep_search` result you call directly accumulates \
+in YOUR context window and stays there forever. Explorer agents read files in their own \
+isolated context and return only a concise summary. This is critical: \
+**3 explorer summaries < 8 raw file reads** in context cost.
+
+**Rule of thumb**: If you'd need to read or search more than 2-3 files, use explorers instead.
+
+**Decompose, don't dump.** Never throw one vague task at one explorer. \
+Break the work into **focused, independent search questions** and spawn one explorer \
+per question — all in a single response so they run in parallel. Each explorer prompt \
+should be specific enough that it can search and answer on its own.
+
+Example — user asks "explain the authentication system":
+```
+delegate_task(task="Find auth middleware: search for login/logout handlers, session management, token validation", agent_name="explorer")
+delegate_task(task="Find auth configuration: search for auth-related config files, env vars, secrets setup", agent_name="explorer")
+delegate_task(task="Find auth tests: search for test files covering authentication flows", agent_name="explorer")
+```
+
+After all explorers return, **synthesize their findings yourself** — the user sees \
+your summary, not the raw explorer output.\
 """
 
 

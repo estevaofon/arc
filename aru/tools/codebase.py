@@ -1218,14 +1218,14 @@ _SUBAGENT_TOOLS = [
 ]
 
 
-async def delegate_task(task: str, context: str = "", agent: str = "") -> str:
+async def delegate_task(task: str, context: str = "", agent_name: str = "") -> str:
     """Delegate a task to a sub-agent that runs autonomously. Multiple calls run concurrently.
     Use for independent research or subtasks to keep your own context clean.
 
     Args:
         task: What the sub-agent should do.
         context: Optional extra context (file paths, constraints).
-        agent: Optional custom agent name to use instead of the generic sub-agent.
+        agent_name: Name of a specialized agent to use instead of the generic sub-agent.
     """
 
     async def _run() -> str:
@@ -1243,19 +1243,15 @@ async def delegate_task(task: str, context: str = "", agent: str = "") -> str:
 
         agent_perm = None
         custom_agent_defs = get_ctx().custom_agent_defs
-        # Agno may pass the caller Agent object instead of a string — coerce to str
-        agent_name = str(agent) if agent and isinstance(agent, str) else ""
+        _agent_name = str(agent_name).strip() if agent_name else ""
 
-        # Print delegation info so the user sees what's happening
-        from rich.console import Console
-        _console = Console()
-        if agent_name and agent_name in custom_agent_defs:
-            _console.print(f"[dim]  → Delegating to agent [bold]{agent_name}[/bold] (task: {task[:80]}{'...' if len(task) > 80 else ''})[/dim]")
-        else:
-            _console.print(f"[dim]  → Delegating to sub-agent #{agent_id} (task: {task[:80]}{'...' if len(task) > 80 else ''})[/dim]")
-
-        if agent_name and agent_name in custom_agent_defs:
-            agent_def = custom_agent_defs[agent_name]
+        # Built-in explorer agent — fast, read-only codebase exploration
+        if _agent_name == "explorer":
+            from aru.agents.explorer import create_explorer
+            sub = create_explorer(task, context)
+            sub.name = f"Explorer-{agent_id}"
+        elif _agent_name and _agent_name in custom_agent_defs:
+            agent_def = custom_agent_defs[_agent_name]
             agent_perm = agent_def.permission
             tools = resolve_tools(agent_def.tools) if agent_def.tools else list(_SUBAGENT_TOOLS)
             tools = [t for t in tools if t is not delegate_task]
@@ -1288,15 +1284,16 @@ Do not create documentation files unless explicitly asked.
                 markdown=True,
             )
 
+        label = f"Explorer-{agent_id}" if _agent_name == "explorer" else f"SubAgent-{agent_id}"
         try:
             from aru.permissions import permission_scope
             with permission_scope(agent_perm):
                 result = await sub.arun(task, stream=False)
             if result and result.content:
-                return _truncate_output(f"[SubAgent-{agent_id}] {result.content}")
-            return f"[SubAgent-{agent_id}] Task completed but no output was returned."
+                return _truncate_output(f"[{label}] {result.content}")
+            return f"[{label}] Task completed but no output was returned."
         except Exception as e:
-            return f"[SubAgent-{agent_id}] Error: {e}"
+            return f"[{label}] Error: {e}"
 
     # Run in a separate asyncio Task so each sub-agent gets its own
     # contextvars snapshot — essential for parallel permission_scope isolation.
@@ -1408,15 +1405,21 @@ def _update_delegate_task_docstring():
     Args:
         task: What the sub-agent should do.
         context: Optional extra context (file paths, constraints).
-        agent: Name of a specialized agent to use. ALWAYS prefer a specialized agent when one matches the task."""
+        agent_name: Name of a specialized agent to use. ALWAYS prefer a specialized agent when one matches the task.
+
+    Built-in agents (always available):
+    - agent_name="explorer": Fast read-only codebase exploration agent. Use for searching files, \
+finding patterns, reading code, and understanding code structure. Optimized for speed with parallel tool calls. \
+When calling this agent, specify the desired thoroughness level: "quick" for basic searches, \
+"medium" for moderate exploration, or "very thorough" for comprehensive analysis."""
 
     custom_agent_defs = get_ctx().custom_agent_defs
     if custom_agent_defs:
-        lines = [f"\n\n    IMPORTANT: When a specialized agent matches the task, you MUST pass its name in the agent parameter."]
-        lines.append(f"    Available specialized agents:")
+        lines = [f"\n\n    IMPORTANT: When a specialized agent matches the task, you MUST pass its name in the agent_name parameter."]
+        lines.append(f"    Additional specialized agents:")
         for name, agent_def in custom_agent_defs.items():
-            lines.append(f"    - agent=\"{name}\": {agent_def.description}")
-        lines.append(f"\n    If no specialized agent fits, omit the agent parameter to use a generic sub-agent.")
+            lines.append(f'    - agent_name="{name}": {agent_def.description}')
+        lines.append(f"\n    If no specialized agent fits, omit the agent_name parameter to use a generic sub-agent.")
         base_doc += "\n".join(lines)
 
     delegate_task.__doc__ = base_doc
