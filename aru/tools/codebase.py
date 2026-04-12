@@ -381,7 +381,22 @@ def edit_file(file_path: str, old_string: str, new_string: str) -> str:
 
         count = content.count(old_string)
         if count == 0:
-            return f"Error: old_string not found in {file_path}"
+            # Provide context: show closest matching region to help the LLM retry
+            import difflib
+            lines = content.splitlines(keepends=True)
+            old_lines = old_string.splitlines(keepends=True)
+            matcher = difflib.SequenceMatcher(None, lines, old_lines)
+            best = matcher.find_longest_match(0, len(lines), 0, len(old_lines))
+            if best.size > 0:
+                # Show surrounding context around the best match
+                ctx_start = max(0, best.a - 2)
+                ctx_end = min(len(lines), best.a + best.size + 2)
+                snippet = "".join(f"{ctx_start + i + 1:4d} | {lines[ctx_start + i]}" for i in range(ctx_end - ctx_start))
+                return f"Error: old_string not found in {file_path}. Closest match region:\n{snippet}"
+            else:
+                # No match at all — show first 20 lines for context
+                snippet = "".join(f"{i + 1:4d} | {l}" for i, l in enumerate(lines[:20]))
+                return f"Error: old_string not found in {file_path}. File starts with:\n{snippet}"
         if count > 1:
             return f"Error: old_string found {count} times in {file_path}. Must be unique."
 
@@ -1193,11 +1208,15 @@ def _fetch_direct(url: str, max_chars: int) -> str:
     return _truncate_output(text, source_tool="web_fetch")
 
 
+_subagent_counter = 0
+_subagent_counter_lock = threading.Lock()
+
+
 def _next_subagent_id() -> int:
-    ctx = get_ctx()
-    with ctx.subagent_counter_lock:
-        ctx.subagent_counter += 1
-        return ctx.subagent_counter
+    global _subagent_counter
+    with _subagent_counter_lock:
+        _subagent_counter += 1
+        return _subagent_counter
 
 
 # Import new tools
@@ -1285,19 +1304,53 @@ Do not create documentation files unless explicitly asked.
             )
 
         label = f"Explorer-{agent_id}" if _agent_name == "explorer" else f"SubAgent-{agent_id}"
-        try:
-            from aru.permissions import permission_scope
-            with permission_scope(agent_perm):
-                result = await sub.arun(task, stream=False)
+
+        async def _execute_with_streaming(agent_instance) -> str:
+            """Run a sub-agent with streaming events for live progress display."""
+            import time as _time
+            from agno.run.agent import (
+                RunContentEvent,
+                RunOutput,
+                ToolCallCompletedEvent,
+                ToolCallStartedEvent,
+            )
+            from aru.display import subagent_progress
+
+            result_content = ""
+            run_output = None
+            _tool_starts: dict[str, float] = {}
+
+            async for event in agent_instance.arun(task, stream=True, stream_events=True, yield_run_output=True):
+                if isinstance(event, RunOutput):
+                    run_output = event
+                    break
+                elif isinstance(event, ToolCallStartedEvent):
+                    if hasattr(event, "tool") and event.tool:
+                        t_id = getattr(event.tool, "tool_call_id", None) or (event.tool.tool_name or "tool")
+                    else:
+                        t_id = getattr(event, "tool_call_id", None) or getattr(event, "tool_name", "tool")
+                    _tool_starts[t_id] = _time.monotonic()
+                elif isinstance(event, ToolCallCompletedEvent):
+                    if hasattr(event, "tool") and event.tool:
+                        t_id = getattr(event.tool, "tool_call_id", None) or getattr(event.tool, "tool_name", "tool")
+                        t_name = event.tool.tool_name or "tool"
+                        t_args = event.tool.tool_args
+                    else:
+                        t_id = getattr(event, "tool_call_id", None) or getattr(event, "tool_name", "tool")
+                        t_name = getattr(event, "tool_name", "tool")
+                        t_args = getattr(event, "tool_args", None)
+                    dur = _time.monotonic() - _tool_starts.pop(t_id, _time.monotonic())
+                    subagent_progress(label, t_name, t_args if isinstance(t_args, dict) else None, duration=dur)
+                elif isinstance(event, RunContentEvent):
+                    if hasattr(event, "content") and event.content:
+                        result_content += event.content
+
             # Track sub-agent token usage in the session so cost is not underestimated.
-            # We accumulate totals directly instead of calling track_tokens() because
-            # track_tokens() also reads cache_patch globals (last_call_metrics) which
-            # may belong to a different concurrent sub-agent — we must not touch last_*.
-            if result and hasattr(result, "metrics") and result.metrics:
+            if run_output and hasattr(run_output, "metrics") and run_output.metrics:
                 try:
                     session = get_ctx().session
                     if session is not None:
-                        m = result.metrics
+                        m = run_output.metrics
                         session.total_input_tokens += getattr(m, "input_tokens", 0) or 0
                         session.total_output_tokens += getattr(m, "output_tokens", 0) or 0
                         session.total_cache_read_tokens += getattr(m, "cache_read_tokens", 0) or 0
@@ -1305,11 +1358,37 @@ Do not create documentation files unless explicitly asked.
                         session.api_calls += 1
                 except (LookupError, AttributeError):
                     pass
-            if result and result.content:
-                return _truncate_output(f"[{label}] {result.content}")
+
+            final_text = run_output.content if run_output and run_output.content else result_content
+            if final_text:
+                return _truncate_output(f"[{label}] {final_text}")
             return f"[{label}] Task completed but no output was returned."
+
+        try:
+            from aru.permissions import permission_scope
+            with permission_scope(agent_perm):
+                return await _execute_with_streaming(sub)
         except Exception as e:
-            return f"[{label}] Error: {e}"
+            # Auto-retry once with a fresh agent instance
+            try:
+                from aru.permissions import permission_scope as _ps
+                # Recreate the agent for a clean retry
+                if _agent_name == "explorer":
+                    from aru.agents.explorer import create_explorer
+                    sub_retry = create_explorer(task, context)
+                    sub_retry.name = f"Explorer-{agent_id}"
+                else:
+                    sub_retry = Agent(
+                        name=sub.name,
+                        model=sub.model,
+                        tools=sub.tools,
+                        instructions=sub.instructions,
+                        markdown=True,
+                    )
+                with _ps(agent_perm):
+                    return await _execute_with_streaming(sub_retry)
+            except Exception as e2:
+                return f"[{label}] Error (after retry): {e2}"
 
     # Run in a separate asyncio Task so each sub-agent gets its own
     # contextvars snapshot — essential for parallel permission_scope isolation.

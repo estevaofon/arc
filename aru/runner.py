@@ -462,6 +462,24 @@ def _build_file_context(file_paths: list[str], max_total: int = 20_000) -> str:
     return "## Pre-loaded file contents (do NOT re-read these files)\n\n" + "\n\n".join(parts)
 
 
+_MODIFY_VERBS = frozenset({
+    "add", "create", "write", "edit", "modify", "update", "implement",
+    "fix", "replace", "rename", "move", "refactor", "remove", "delete",
+})
+_MUTATION_LABELS = frozenset({"Write", "Edit", "Bash"})
+
+
+def _step_expected_mutation(description: str) -> bool:
+    """Check if step description implies file modifications."""
+    first_word = description.strip().split()[0].lower().rstrip(":")
+    return first_word in _MODIFY_VERBS
+
+
+def _has_mutation_tool(tool_calls: list[str]) -> bool:
+    """Check if any tool call is a write/edit/bash operation."""
+    return any(tc.split("(")[0] in _MUTATION_LABELS for tc in tool_calls)
+
+
 async def execute_plan_steps(session, executor_factory) -> str | None:
     """Execute plan steps one by one with live progress tracking."""
     plan_files = _extract_plan_file_paths(session.current_plan)
@@ -586,12 +604,57 @@ async def execute_plan_steps(session, executor_factory) -> str | None:
                 )
 
             if step_failed:
-                step.status = "failed"
+                # Auto-retry once with error context before asking the user
                 fail_msg = content[:200] if content else f"{tasks_failed}/{tasks_total} subtasks failed"
-                console.print(f"\n[red]Step {step.index} failed: {fail_msg}[/red]")
-                if not get_skip_permissions() and not ask_yes_no("Continue with remaining steps?"):
-                    break
-            elif content or tasks_all_done:
+                console.print(f"\n[yellow]Step {step.index} failed, retrying automatically...[/yellow]")
+                reset_task_store()
+                retry_prompt = (
+                    step_prompt
+                    + f"\n\n## Previous Attempt Failed\nError: {fail_msg}\n"
+                    + "Fix the issues from the previous attempt. Do NOT repeat the same mistake."
+                )
+                executor = executor_factory()
+                retry_result = await run_agent_capture(executor, retry_prompt, session, lightweight=True)
+                content = retry_result.content
+                run_result = retry_result
+
+                # Re-evaluate after retry
+                store = get_task_store()
+                all_tasks = store.get_all()
+                tasks_completed = sum(1 for t in all_tasks if t["status"] == "completed")
+                tasks_failed = sum(1 for t in all_tasks if t["status"] == "failed")
+                tasks_total = len(all_tasks)
+                tasks_all_done = tasks_total > 0 and (tasks_completed + tasks_failed == tasks_total)
+
+                still_failed = False
+                if tasks_all_done and tasks_failed > 0 and tasks_completed == 0:
+                    still_failed = True
+                elif content:
+                    still_failed = (
+                        content.startswith("Error")
+                        or "Error from OpenAI API" in content
+                        or "Error in Agent run" in content
+                    )
+
+                if still_failed:
+                    step.status = "failed"
+                    fail_msg = content[:200] if content else f"{tasks_failed}/{tasks_total} subtasks failed"
+                    console.print(f"\n[red]Step {step.index} failed after retry: {fail_msg}[/red]")
+                    if not get_skip_permissions() and not ask_yes_no("Continue with remaining steps?"):
+                        break
+                else:
+                    # Retry succeeded — fall through to success handling
+                    step_failed = False
+
+            # Mutation validation warning (non-blocking)
+            if not step_failed and not run_result.stalled:
+                if _step_expected_mutation(step.description) and not _has_mutation_tool(run_result.tool_calls):
+                    console.print(
+                        f"[yellow]\u26a0 Step {step.index} was expected to modify files "
+                        f"but no write tools were called.[/yellow]"
+                    )
+
+            if not step_failed and (content or tasks_all_done):
                 step.status = "completed"
                 summary = content or f"All {tasks_completed} subtasks completed."
                 step_text = f"### Step {step.index}: {step.description}\n{summary}"
@@ -609,8 +672,26 @@ async def execute_plan_steps(session, executor_factory) -> str | None:
             if not get_skip_permissions() and not ask_yes_no("Continue with remaining steps?"):
                 break
         except Exception as e:
+            # Auto-retry once on exception
+            console.print(f"\n[yellow]Step {step.index} error: {e}. Retrying...[/yellow]")
+            try:
+                reset_task_store()
+                retry_prompt = (
+                    step_prompt
+                    + f"\n\n## Previous Attempt Error\n{e}\n"
+                    + "Fix the issues and complete this step."
+                )
+                executor = executor_factory()
+                retry_result = await run_agent_capture(executor, retry_prompt, session, lightweight=True)
+                if retry_result.content and not retry_result.content.startswith("Error"):
+                    step.status = "completed"
+                    all_results.append(f"### Step {step.index}: {step.description}\n{retry_result.content}")
+                    completed_context += f"\n- Step {step.index} ({step.description}): Done (after retry)"
+                    continue
+            except Exception:
+                pass
             step.status = "failed"
-            console.print(f"\n[red]Step {step.index} failed: {e}[/red]")
+            console.print(f"\n[red]Step {step.index} failed after retry: {e}[/red]")
             if not get_skip_permissions() and not ask_yes_no("Continue with remaining steps?"):
                 break
 

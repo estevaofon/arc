@@ -253,6 +253,34 @@ def _format_tool_label(tool_name: str, tool_args: dict | None) -> str:
     return display
 
 
+def subagent_progress(label: str, tool_name: str, tool_args: dict | None,
+                      duration: float | None = None):
+    """Print sub-agent tool completion into the active Live context (or console).
+
+    Only called on tool completion — shows a single ✓ line per tool call,
+    keeping the output compact (no duplicate start/complete lines).
+    """
+    from aru.runtime import get_ctx
+    try:
+        ctx = get_ctx()
+    except LookupError:
+        return
+    tool_label = _format_tool_label(tool_name, tool_args)
+    dur_str = f" {duration:.1f}s" if duration and duration >= 0.5 else ""
+    line = Text.assemble(
+        ("    ", ""),
+        ("\u2713 ", "bold green"),
+        (f"[{label}] ", "dim"),
+        (tool_label, "dim"),
+        (dur_str, "dim cyan"),
+    )
+    target = ctx.live if ctx.live else None
+    if target:
+        target.console.print(line)
+    else:
+        ctx.console.print(line)
+
+
 class ToolTracker:
     """Tracks active tool calls with timing, displayed inside the Live area."""
 
