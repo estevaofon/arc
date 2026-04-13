@@ -1,0 +1,118 @@
+site_name: Aru
+site_description: Assistente de programação inteligente no terminal, com múltiplos agentes Claude
+site_url: https://estevaofon.github.io/aru/
+repo_url: https://github.com/estevaofon/aru
+repo_name: estevaofon/aru
+edit_uri: edit/main/docs-site/
+
+docs_dir: docs-site
+site_dir: site
+
+theme:
+  name: material
+  language: pt-BR
+  favicon: assets/favicon.svg
+  logo: assets/logo.svg
+  icon:
+    repo: fontawesome/brands/github
+  font:
+    text: Inter
+    code: JetBrains Mono
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: deep orange
+      accent: deep orange
+      toggle:
+        icon: material/weather-night
+        name: Mudar para tema escuro
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: deep orange
+      accent: deep orange
+      toggle:
+        icon: material/weather-sunny
+        name: Mudar para tema claro
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.indexes
+    - navigation.top
+    - navigation.footer
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - search.share
+    - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
+    - content.action.edit
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.keys
+  - pymdownx.mark
+  - pymdownx.tilde
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/estevaofon/aru
+    - icon: fontawesome/brands/python
+      link: https://pypi.org/project/aru-code/
+  generator: false
+
+extra_css:
+  - assets/extra.css
+
+nav:
+  - Introdução: index.md
+  - Começando:
+      - Instalação: comecando/instalacao.md
+      - Início Rápido: comecando/inicio-rapido.md
+      - CLI: comecando/cli.md
+  - Configuração:
+      - Visão Geral: configuracao/index.md
+      - Modelos e Providers: configuracao/modelos.md
+      - Permissões: configuracao/permissoes.md
+      - Regras (AGENTS.md): configuracao/regras.md
+      - MCP Servers: configuracao/mcp.md
+  - Agentes:
+      - Visão Geral: agentes/index.md
+      - Agentes Customizados: agentes/customizados.md
+      - Planejamento: agentes/planejamento.md
+  - Comandos e Skills:
+      - Comandos Customizados: comandos/customizados.md
+      - Skills: comandos/skills.md
+  - Ferramentas:
+      - Ferramentas Integradas: ferramentas/index.md
+      - Ferramentas Customizadas: ferramentas/customizadas.md
+  - Plugins:
+      - Sistema de Plugins: plugins/index.md
+      - Hooks: plugins/hooks.md
+  - Sessões: sessoes.md

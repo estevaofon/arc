@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 40" fill="none">
+  <text x="0" y="30" font-family="JetBrains Mono, monospace" font-size="30" font-weight="700" fill="#ff6f00">aru</text>
+  <circle cx="75" cy="20" r="4" fill="#ff6f00"/>
+  <circle cx="90" cy="20" r="4" fill="#ff6f00" opacity="0.6"/>
+  <circle cx="105" cy="20" r="4" fill="#ff6f00" opacity="0.3"/>
+</svg>

@@ -6,6 +6,9 @@ dist/
 wheels/
 *.egg-info
 
+# MkDocs build output
+site/
+
 # Virtual environments
 .venv
 
