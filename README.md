@@ -2,6 +2,8 @@
 
 An intelligent coding assistant for the terminal, powered by LLMs and [Agno](https://github.com/agno-agi/agno) agents.
 
+📖 **Full documentation:** [https://estevaofon.github.io/aru/](https://estevaofon.github.io/aru/)
+
 ![0329(3)](https://github.com/user-attachments/assets/e84d5139-ebaa-4d12-bbae-628fae7dbc7a)
 
 ## Highlights
