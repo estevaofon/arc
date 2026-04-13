@@ -472,7 +472,7 @@ Aru can load tools from MCP servers. Configure in `.aru/mcp_config.json`:
 
 ### File Operations
 - `read_file` — Reads files with line range support and binary detection
-- `read_file_smart` — Answers specific questions about a file without returning raw content
+- `read_files` — Reads multiple files in parallel (single batched call)
 - `write_file` — Writes content to files, creating directories as needed
 - `edit_file` — Find-and-replace edits on files
 

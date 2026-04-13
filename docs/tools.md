@@ -1,13 +1,13 @@
 # Tools
 
-Aru provides 11 built-in tools and supports user-defined custom tools. All tools are callable by the LLM during conversations.
+Aru provides built-in tools and supports user-defined custom tools. All tools are callable by the LLM during conversations.
 
 ## Built-in Tools
 
 | Tool | Category | Description |
 |------|----------|-------------|
 | `read_file` | File I/O | Read file contents with optional line range |
-| `read_file_smart` | File I/O | Intelligent read — full file or AST summary for large files |
+| `read_files` | File I/O | Read multiple files in parallel (batch) |
 | `write_file` | File I/O | Create or overwrite a file |
 | `edit_file` | File I/O | Apply targeted edits (find & replace) to one or more files |
 | `glob_search` | Search | Find files matching a glob pattern recursively |

@@ -66,8 +66,8 @@ Every tool call accumulates its result in your context window. Use the minimum n
 
 1. **Find files/patterns** → `grep_search(pattern, file_glob="*.py")` or `glob_search`. \
 Default shows 10 lines of context — use `context_lines=30` for full function bodies.
-2. **Understand a file** → `read_file_smart(file_path, query)` — returns a concise answer, not raw content
-3. **Need raw content** → `read_file(file_path)` — returns first chunk + outline for large files
+2. **Need raw content** → `read_file(file_path)` — returns first chunk + outline for large files
+3. **Need several files at once** → `read_files(paths)` — parallel batch read
 
 **Batch independent tool calls**: When you need answers from multiple independent sources, \
 emit ALL those tool calls in a single response.
@@ -148,10 +148,10 @@ split into subtasks grouped by concern (e.g. "Create model files", "Create route
 
 ## Reading strategy — read, edit, test
 
-1. **Know the file + have a question?** → `read_file_smart(file_path, query)`
-2. **Need a specific pattern?** → `grep_search(pattern, file_glob="*.py")` — default 10 lines context. \
+1. **Need a specific pattern?** → `grep_search(pattern, file_glob="*.py")` — default 10 lines context. \
 Use `context_lines=30` for full function bodies.
-3. **Need lines for editing?** → `read_file(file_path, start_line=N, end_line=M)` using line numbers from grep
+2. **Need lines for editing?** → `read_file(file_path, start_line=N, end_line=M)` using line numbers from grep
+3. **Need several files at once?** → `read_files(paths)` — parallel batch read
 4. **Need the whole file?** → `read_file(file_path)` — returns first chunk + outline for large files
 5. **Need the COMPLETE file (>60KB)?** → `read_file(file_path, max_size=0)` — reads in chunks. Use rarely.
 
@@ -194,10 +194,9 @@ Skip exploration when the task is clear and the relevant files are obvious.
 
 Every tool call accumulates its result in your context window. Use the minimum needed:
 
-1. **Don't know which file?** → `grep_search` / `glob_search` for patterns, \
-`read_file_smart(file_path, query)` when you know the file.
-2. **Know the file + have a question?** → `read_file_smart(file_path, query)`
-3. **Need specific lines?** → `read_file(file_path, start_line=N, end_line=M)`
+1. **Don't know which file?** → `grep_search` / `glob_search` for patterns.
+2. **Need specific lines?** → `read_file(file_path, start_line=N, end_line=M)`
+3. **Need several files at once?** → `read_files(paths)` — parallel batch read.
 4. **Need the whole file?** → `read_file(file_path)` — returns first chunk + outline for large files.
 
 **NEVER read the same file twice.** Check if you already have the content in context.
@@ -218,7 +217,7 @@ For simple, directed lookups (one known file, one specific symbol) use \
 
 For **anything broader** — understanding a system, researching before implementing, \
 analyzing multiple files, writing specs or documentation — **always use explorer agents**. \
-Every `read_file` / `read_file_smart` / `grep_search` result you call directly accumulates \
+Every `read_file` / `read_files` / `grep_search` result you call directly accumulates \
 in YOUR context window and stays there forever. Explorer agents read files in their own \
 isolated context and return only a concise summary. This is critical: \
 **3 explorer summaries < 8 raw file reads** in context cost.

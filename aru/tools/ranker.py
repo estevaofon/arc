@@ -3,6 +3,7 @@
 import fnmatch
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 
 from aru.tools.gitignore import walk_filtered
 
@@ -21,6 +22,40 @@ def _get_project_files(root_dir: str) -> list[str]:
             rel_path = os.path.relpath(filepath, root_dir).replace("\\", "/")
             files.append(rel_path)
     return files
+
+
+def _collect_mtimes(root_dir: str, files: list[str]) -> dict[str, float]:
+    """Return {rel_path: mtime} using a single scandir pass per directory.
+
+    Previously we called ``os.path.getmtime`` per file, which is one syscall
+    per file. ``os.scandir`` batches the dir listing with stat info so we
+    only pay one syscall per directory for modest cost.
+    """
+    mtimes: dict[str, float] = {}
+    # Group files by parent directory for scandir access
+    groups: dict[str, set[str]] = {}
+    for rel in files:
+        parent = os.path.dirname(rel)
+        groups.setdefault(parent, set()).add(os.path.basename(rel))
+
+    for parent, names in groups.items():
+        abs_parent = os.path.join(root_dir, parent) if parent else root_dir
+        try:
+            with os.scandir(abs_parent) as it:
+                for entry in it:
+                    if entry.name not in names:
+                        continue
+                    try:
+                        st = entry.stat()
+                        rel_path = (
+                            f"{parent}/{entry.name}" if parent else entry.name
+                        ).replace("\\", "/")
+                        mtimes[rel_path] = st.st_mtime
+                    except OSError:
+                        continue
+        except OSError:
+            continue
+    return mtimes
 
 
 def _score_name_match(file_path: str, keywords: list[str]) -> float:
@@ -80,7 +115,11 @@ def _extract_keywords(task: str) -> list[str]:
 
 
 def _score_recency(file_path: str, root_dir: str, max_age_days: float = 30.0) -> float:
-    """Score based on how recently the file was modified (0-1, 1 = most recent)."""
+    """Score based on how recently the file was modified (0-1, 1 = most recent).
+
+    Kept as a standalone helper for tests; rank_files uses a batched path
+    (``_collect_mtimes``) to avoid one syscall per file.
+    """
     try:
         mtime = os.path.getmtime(os.path.join(root_dir, file_path))
         import time
@@ -95,27 +134,51 @@ def _score_recency(file_path: str, root_dir: str, max_age_days: float = 30.0) ->
         return 0.0
 
 
-def _get_structural_scores(top_files: list[str], root_dir: str) -> dict[str, float]:
-    """Boost files that are dependencies of already-relevant files."""
+def _recency_from_mtime(mtime: float, max_age_days: float = 30.0) -> float:
+    import time
+    age_days = (time.time() - mtime) / 86400
+    if age_days <= 0:
+        return 1.0
+    if age_days >= max_age_days:
+        return 0.0
+    return 1.0 - (age_days / max_age_days)
+
+
+def _read_file_content(full_path: str) -> str | None:
+    """Read a file as text, returning None on failure. Used by parallel pool."""
     try:
-        from aru.tools.ast_tools import _resolve_import_to_file, _find_project_root
+        with open(full_path, "r", encoding="utf-8", errors="ignore") as f:
+            return f.read()
+    except OSError:
+        return None
+
+
+def _get_structural_scores(top_files: list[str], root_dir: str) -> dict[str, float]:
+    """Boost files that are dependencies of already-relevant files.
+
+    Reads the top-N candidates in parallel via a small thread pool so we
+    don't serialize on file I/O latency.
+    """
+    try:
+        from aru.tools.ast_tools import _resolve_import_to_file, _find_project_root  # noqa: F401
     except ImportError:
         return {}
 
+    candidates = [
+        (fp, os.path.join(root_dir, fp))
+        for fp in top_files[:5]
+        if os.path.isfile(os.path.join(root_dir, fp))
+    ]
+    if not candidates:
+        return {}
+
+    with ThreadPoolExecutor(max_workers=min(5, len(candidates))) as pool:
+        contents = list(pool.map(_read_file_content, [c[1] for c in candidates]))
+
     dep_counts: dict[str, int] = {}
-
-    for file_path in top_files[:5]:  # Only trace top 5 to avoid slowness
-        full_path = os.path.join(root_dir, file_path)
-        if not os.path.isfile(full_path):
+    for (_fp, _full), content in zip(candidates, contents):
+        if not content:
             continue
-
-        try:
-            with open(full_path, "r", encoding="utf-8", errors="ignore") as f:
-                content = f.read()
-        except OSError:
-            continue
-
-        # Extract imports and resolve to local files
         for line in content.split("\n"):
             stripped = line.strip()
             if stripped.startswith("import ") or stripped.startswith("from "):
@@ -156,8 +219,12 @@ def rank_files(task: str, top_k: int = 15) -> str:
     # Signal 1: Name match scores
     name_scores = {f: _score_name_match(f, keywords) for f in all_files}
 
-    # Signal 2: Recency scores
-    recency_scores = {f: _score_recency(f, root_dir) for f in all_files}
+    # Signal 2: Recency scores — batch mtime lookup via scandir (one syscall
+    # per directory instead of per file).
+    mtimes = _collect_mtimes(root_dir, all_files)
+    recency_scores = {
+        f: _recency_from_mtime(mtimes[f]) if f in mtimes else 0.0 for f in all_files
+    }
 
     # Preliminary ranking (without structural) to find top files for dependency tracing
     preliminary_scores = {}

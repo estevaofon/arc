@@ -196,7 +196,7 @@ class StatusBar:
 
 TOOL_DISPLAY_NAMES = {
     "read_file": "Read",
-    "read_file_smart": "ReadSmart",
+    "read_files": "ReadBatch",
     "write_file": "Write",
     "edit_file": "Edit",
     "glob_search": "Glob",
@@ -209,7 +209,7 @@ TOOL_DISPLAY_NAMES = {
 
 TOOL_PRIMARY_ARG = {
     "read_file": "file_path",
-    "read_file_smart": "file_path",
+    "read_files": "paths",
     "write_file": "file_path",
     "edit_file": "file_path",
     "glob_search": "pattern",

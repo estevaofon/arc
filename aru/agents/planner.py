@@ -6,7 +6,11 @@ from agno.compression.manager import CompressionManager
 from aru.agents.base import build_instructions
 from aru.providers import create_model
 from aru.tools.codebase import (
-    glob_search, grep_search, list_directory, read_file, read_file_smart,
+    _glob_search_tool,
+    _grep_search_tool,
+    _list_directory_tool,
+    _read_file_tool,
+    read_files,
 )
 from aru.runtime import get_ctx
 
@@ -34,8 +38,8 @@ Return ONLY the markdown plan. No explanation, no preamble.\
 
 # Planner uses read-only tools only — no write/edit/bash
 PLANNER_TOOLS = [
-    read_file, read_file_smart,
-    glob_search, grep_search, list_directory,
+    _read_file_tool, read_files,
+    _glob_search_tool, _grep_search_tool, _list_directory_tool,
 ]
 
 

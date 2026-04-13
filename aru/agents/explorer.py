@@ -7,24 +7,26 @@ from agno.agent import Agent
 from aru.providers import create_model
 from aru.runtime import get_ctx
 from aru.tools.codebase import (
+    _glob_search_tool,
+    _grep_search_tool,
+    _list_directory_tool,
+    _rank_files_tool,
+    _read_file_tool,
     bash,
-    glob_search,
-    grep_search,
-    list_directory,
-    rank_files,
-    read_file,
-    read_file_smart,
+    read_files,
 )
 
-# Read-only tools only — no write/edit/delegate (prevents recursion and mutations)
+# Read-only tools only — no write/edit/delegate (prevents recursion and mutations).
+# All wrappers are async so the Explorer's "multi-parallel tool calls" prompt
+# actually matches runtime behavior — Agno can await them concurrently.
 EXPLORER_TOOLS = [
-    read_file,
-    read_file_smart,
-    glob_search,
-    grep_search,
-    list_directory,
+    _read_file_tool,
+    read_files,
+    _glob_search_tool,
+    _grep_search_tool,
+    _list_directory_tool,
     bash,
-    rank_files,
+    _rank_files_tool,
 ]
 
 EXPLORER_ROLE = """\
@@ -52,7 +54,7 @@ Guidelines:
 - Use glob_search for broad file pattern matching
 - Use grep_search for searching file contents with regex
 - Use read_file when you know the specific file path you need to read
-- Use read_file_smart when you know the file and have a specific question about it
+- Use read_files (batch) when you need to pull several files at once
 - Use bash ONLY for read-only operations (ls, git status, git log, git diff, find, cat, head, tail)
 - NEVER use bash for: mkdir, touch, rm, cp, mv, git add, git commit, npm install, pip install, \
 or any file creation/modification

@@ -5,7 +5,7 @@ from aru.tools.codebase import (
     edit_file, list_directory,
     get_project_tree, _is_long_running,
     _html_to_text, clear_read_cache,
-    read_file_smart, _format_diff,
+    _format_diff,
     resolve_tools, TOOL_REGISTRY, GENERAL_TOOLS,
     delegate_task, set_custom_agents,
 )
@@ -434,20 +434,6 @@ class TestCacheAndCallbacks:
 
         reset_session()
         assert len(ctx.session_allowed) == 0
-
-
-@pytest.mark.asyncio
-async def test_read_file_smart_below_threshold(tmp_path):
-    """Test that read_file_smart returns raw content when file is small (≤ 3_000 chars)."""
-    f = tmp_path / "small.py"
-    # Content well under the 3_000-char threshold
-    f.write_text("def add(a, b):\n    return a + b\n")
-
-    result = await read_file_smart(str(f), query="What does this file do?")
-
-    # Should return raw content, not a model-generated answer
-    assert "def add(a, b):" in result
-    assert "return a + b" in result
 
 
 class TestSkipPermissions:

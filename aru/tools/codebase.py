@@ -2,16 +2,24 @@
 
 import asyncio
 import fnmatch
+import functools
 import html.parser
+import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import threading
 import textwrap
 
-from aru.tools.gitignore import is_ignored, walk_filtered
+from aru.tools.gitignore import (
+    invalidate_walk_cache,
+    is_ignored,
+    list_project_files,
+    walk_filtered,
+)
 
 import httpx
 
@@ -27,6 +35,7 @@ def _notify_file_mutation():
     """Notify the session that files changed so caches are invalidated."""
     ctx = get_ctx()
     ctx.read_cache.clear()
+    invalidate_walk_cache()
     if ctx.on_file_mutation:
         ctx.on_file_mutation()
 
@@ -194,73 +203,6 @@ def read_file(file_path: str, start_line: int = 0, end_line: int = 0, max_size: 
         return f"Error: File not found: {file_path}"
     except Exception as e:
         return f"Error reading file: {e}"
-
-
-# Threshold: files smaller than this are returned as-is (not worth a model call)
-_SMART_READ_THRESHOLD = 3_000  # chars (~750 tokens)
-
-
-async def read_file_smart(file_path: str, query: str) -> str:
-    """Read a file and answer a specific question about it — returns a concise answer, NOT raw content.
-
-    Use this instead of read_file when you only need a specific piece of information
-    about a file (e.g., "does this file have tests for X?", "what does function Y do?",
-    "which classes are exported?"). This is much cheaper on tokens than reading the full file.
-
-    Use plain read_file only when you need to see the actual code/content.
-
-    Args:
-        file_path: Path to the file to read.
-        query: The specific question you want answered about this file.
-    """
-    # Read raw content first (reuse existing read_file logic)
-    raw = read_file(file_path, max_size=15_000)
-
-    if raw.startswith("Error:"):
-        return raw
-
-    # Strip line number prefixes for the model (cleaner input)
-    lines = raw.splitlines()
-    clean_lines = []
-    for line in lines:
-        # Lines have format "  42 | content" — strip the prefix
-        if " | " in line[:8]:
-            clean_lines.append(line.split(" | ", 1)[1] if " | " in line else line)
-        else:
-            clean_lines.append(line)
-    clean = "\n".join(clean_lines)
-
-    # Small file — just return raw content (model call not worth it)
-    if len(clean) <= _SMART_READ_THRESHOLD:
-        return raw
-
-    # Large file — call small model to answer the query
-    from agno.agent import Agent
-    from aru.providers import create_model
-
-    small_ref = _get_small_model_ref()
-    prompt = (
-        f"Answer this question about the file `{file_path}`:\n\n"
-        f"**Question:** {query}\n\n"
-        f"**File content:**\n```\n{clean[:15_000]}\n```\n\n"
-        f"Give a concise, direct answer. If code is relevant, quote only the essential snippet."
-    )
-
-    try:
-        summarizer = Agent(
-            name="FileReader",
-            model=create_model(small_ref, max_tokens=512),
-            instructions="You answer specific questions about source code files. Be concise and direct.",
-            markdown=False,
-        )
-        result = await summarizer.arun(prompt, stream=False)
-        answer = result.content.strip() if result and result.content else ""
-        if not answer:
-            return raw  # fallback
-        return f"[{file_path}] {answer}"
-    except Exception:
-        return raw  # fallback to raw content on any error
-
 
 
 def write_file(file_path: str, content: str) -> str:
@@ -501,13 +443,86 @@ def edit_files(edits: list[dict]) -> str:
     return "\n".join(parts) or "No edits to apply."
 
 
-def glob_search(pattern: str, directory: str = ".") -> str:
-    """Find files matching a glob pattern recursively.
+# ── ripgrep integration ───────────────────────────────────────────────
+# Hot-path file scanning delegates to ripgrep (Rust, parallel, gitignore-
+# aware) when available. Fallback is the pure-Python walk_filtered + regex
+# path, preserved below so the tools still work on systems without rg.
 
-    Args:
-        pattern: Glob pattern to match (e.g. '**/*.py', 'src/**/*.ts').
-        directory: Directory to search in. Defaults to current directory.
-    """
+_rg_path_cached: str | None = None
+_rg_path_resolved = False
+
+
+def _rg_path() -> str | None:
+    """Return absolute path to the `rg` binary, or None if unavailable."""
+    global _rg_path_cached, _rg_path_resolved
+    if not _rg_path_resolved:
+        _rg_path_cached = shutil.which("rg")
+        _rg_path_resolved = True
+    return _rg_path_cached
+
+
+async def _run_rg(args: list[str], cwd: str, timeout: float = 30.0) -> tuple[int, str, str]:
+    """Run ripgrep with *args* asynchronously. Returns (code, stdout, stderr)."""
+    rg = _rg_path()
+    if not rg:
+        return (-1, "", "rg not available")
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            rg,
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=cwd,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except asyncio.TimeoutError:
+            proc.kill()
+            return (-1, "", "rg timed out")
+        return (
+            proc.returncode or 0,
+            stdout.decode("utf-8", errors="replace"),
+            stderr.decode("utf-8", errors="replace"),
+        )
+    except FileNotFoundError:
+        return (-1, "", "rg not available")
+    except Exception as e:
+        return (-1, "", f"rg error: {e}")
+
+
+async def _glob_search_rg(pattern: str, directory: str = ".") -> str | None:
+    """ripgrep-backed glob. Returns None to signal fallback."""
+    if not _rg_path():
+        return None
+
+    # Normalize pattern for rg's -g: rg uses gitignore-style globs.
+    # `**/*.py` works natively; `*.py` matches only top-level in rg -g, so
+    # we mirror fnmatch semantics by special-casing that case.
+    rg_pattern = pattern
+    args = ["--files", "-g", rg_pattern, directory]
+    code, stdout, stderr = await _run_rg(args, cwd=directory)
+    if code not in (0, 1):  # -1 = not available / error
+        return None
+
+    matches = [line for line in stdout.splitlines() if line]
+    # rg emits paths relative to its cwd. Normalize to be relative to
+    # *directory* exactly like the Python path so tests/callers agree.
+    rels = []
+    for m in matches:
+        rel = os.path.relpath(os.path.abspath(os.path.join(directory, m)), directory)
+        rels.append(rel)
+
+    if not rels:
+        return f"No files matched pattern: {pattern}"
+
+    rels.sort()
+    if len(rels) > 100:
+        return "\n".join(rels[:100]) + f"\n... and {len(rels) - 100} more matches (use a more specific pattern to narrow results)"
+    return "\n".join(rels)
+
+
+def _glob_search_python(pattern: str, directory: str = ".") -> str:
+    """Pure-Python glob fallback used when ripgrep is unavailable."""
     matches = []
     for root, dirs, files in walk_filtered(directory):
         for filename in files:
@@ -527,23 +542,25 @@ def glob_search(pattern: str, directory: str = ".") -> str:
 
     if not matches:
         return f"No files matched pattern: {pattern}"
-        
+
     matches.sort()
     if len(matches) > 100:
         return "\n".join(matches[:100]) + f"\n... and {len(matches) - 100} more matches (use a more specific pattern to narrow results)"
     return "\n".join(matches)
 
 
-def grep_search(pattern: str, directory: str = ".", file_glob: str = "", context_lines: int = 10) -> str:
-    """Search for a regex pattern in file contents.
+def glob_search(pattern: str, directory: str = ".") -> str:
+    """Find files matching a glob pattern recursively.
 
     Args:
-        pattern: Regular expression pattern to search for.
+        pattern: Glob pattern to match (e.g. '**/*.py', 'src/**/*.ts').
         directory: Directory to search in. Defaults to current directory.
-        file_glob: Optional glob to filter which files to search (e.g. '*.py').
-        context_lines: Lines of context before and after each match (like grep -C). Default 10.
-            Use 0 for file-level matches only. Use 30+ for full function bodies.
     """
+    return _glob_search_python(pattern, directory)
+
+
+def _grep_search_python(pattern: str, directory: str = ".", file_glob: str = "", context_lines: int = 10) -> str:
+    """Pure-Python grep fallback used when ripgrep is unavailable."""
     import re
 
     try:
@@ -641,6 +658,151 @@ def grep_search(pattern: str, directory: str = ".", file_glob: str = "", context
     return _truncate_output(output, source_tool="grep")
 
 
+async def _grep_search_rg(
+    pattern: str,
+    directory: str = ".",
+    file_glob: str = "",
+    context_lines: int = 10,
+) -> str | None:
+    """ripgrep-backed grep. Returns None when rg can't be used so callers can fall back."""
+    if not _rg_path():
+        return None
+
+    MAX_MATCHES = 20 if context_lines > 0 else 50
+
+    args = [
+        "--json",
+        "--no-messages",
+        "-e",
+        pattern,
+    ]
+    if context_lines > 0:
+        args.extend(["--context", str(context_lines)])
+    if file_glob:
+        args.extend(["--glob", file_glob])
+    # Cap how much rg reports so very noisy patterns don't flood us.
+    args.extend(["--max-count", str(MAX_MATCHES * 5)])
+    args.append(directory)
+
+    code, stdout, _stderr = await _run_rg(args, cwd=directory)
+    if code not in (0, 1):
+        return None
+    if not stdout:
+        return f"No matches found for pattern: {pattern}"
+
+    # Parse rg's JSON-lines stream into per-file records so we can render
+    # the same format the Python path produces.
+    per_file: dict[str, list[tuple[int, str, bool]]] = {}
+    # (line_number, text, is_match)
+    match_count_total = 0
+    for raw in stdout.splitlines():
+        if not raw:
+            continue
+        try:
+            evt = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        etype = evt.get("type")
+        if etype not in ("match", "context"):
+            continue
+        data = evt.get("data") or {}
+        path_info = data.get("path") or {}
+        rel = path_info.get("text")
+        if not rel:
+            continue
+        rel = os.path.relpath(os.path.abspath(os.path.join(directory, rel)), directory)
+        lines_info = data.get("lines") or {}
+        text = lines_info.get("text") or ""
+        line_no = data.get("line_number")
+        if line_no is None:
+            continue
+        is_match = etype == "match"
+        per_file.setdefault(rel, []).append((line_no, text.rstrip("\n"), is_match))
+        if is_match:
+            match_count_total += 1
+
+    if not per_file:
+        return f"No matches found for pattern: {pattern}"
+
+    files_with_matches: dict[str, list[int]] = {
+        rel: [ln for ln, _t, is_m in entries if is_m]
+        for rel, entries in per_file.items()
+    }
+
+    results: list[str] = []
+    emitted_matches = 0
+    stopped_early = False
+
+    for rel, entries in per_file.items():
+        entries.sort(key=lambda e: e[0])
+
+        if context_lines > 0:
+            # Group into blocks using rg's own "-- " separator behavior: any
+            # gap >1 line between rows starts a new block.
+            block: list[str] = []
+            last_line: int | None = None
+            for ln, text, is_m in entries:
+                if last_line is not None and ln > last_line + 1:
+                    results.extend(block)
+                    results.append("---")
+                    block = []
+                marker = ">" if is_m else " "
+                block.append(f"{rel}:{ln}:{marker} {text}")
+                last_line = ln
+                if is_m:
+                    emitted_matches += 1
+            if block:
+                results.extend(block)
+                results.append("---")
+        else:
+            for ln, text, is_m in entries:
+                if not is_m:
+                    continue
+                results.append(f"{rel}:{ln}: {text}")
+                emitted_matches += 1
+
+        if emitted_matches >= MAX_MATCHES:
+            stopped_early = True
+            break
+
+    if results and results[-1] == "---":
+        results.pop()
+
+    if not results:
+        return f"No matches found for pattern: {pattern}"
+
+    output = "\n".join(results)
+
+    if len(files_with_matches) > 1 or stopped_early:
+        summary_lines = ["\n[Match summary]"]
+        for fpath, line_nums in files_with_matches.items():
+            nums = ", ".join(str(n) for n in line_nums[:10])
+            extra = f" +{len(line_nums) - 10} more" if len(line_nums) > 10 else ""
+            summary_lines.append(f"  {fpath}: lines {nums}{extra}")
+        if stopped_early:
+            summary_lines.append(
+                f"  ... search stopped at {emitted_matches} matches. Use file_glob or a more specific pattern."
+            )
+        output += "\n".join(summary_lines)
+
+    return _truncate_output(output, source_tool="grep")
+
+
+def grep_search(pattern: str, directory: str = ".", file_glob: str = "", context_lines: int = 10) -> str:
+    """Search for a regex pattern in file contents.
+
+    Args:
+        pattern: Regular expression pattern to search for.
+        directory: Directory to search in. Defaults to current directory.
+        file_glob: Optional glob to filter which files to search (e.g. '*.py').
+        context_lines: Lines of context before and after each match (like grep -C). Default 10.
+            Use 0 for file-level matches only. Use 30+ for full function bodies.
+    """
+    # Sync entry point kept for tests/back-compat; the async tool wrapper below
+    # is what agents actually invoke (and will prefer ripgrep when available).
+    return _grep_search_python(pattern, directory, file_glob, context_lines)
+
+
 def list_directory(directory: str = ".") -> str:
     """List files and directories in the given path.
 
@@ -674,23 +836,23 @@ def get_project_tree(root_dir: str, max_depth: int = 3, max_files_per_dir: int =
 
     lines = []
     root_dir = os.path.abspath(root_dir)
-    
+
     if not os.path.exists(root_dir):
         return ""
 
     for dirpath, dirs, files in walk_filtered(root_dir):
         rel_path = os.path.relpath(dirpath, root_dir)
-        
-        # Calculate depth
+
+        # Calculate depth and prune by skipping — the walker is cached, so
+        # mutating `dirs` can't stop recursion here; filter by depth instead.
         if rel_path == ".":
             depth = 0
             lines.append(os.path.basename(root_dir) + "/")
         else:
             depth = rel_path.count(os.sep) + 1
             if depth > max_depth:
-                dirs.clear()  # Stop descending
                 continue
-            
+
             indent = "  " * depth
             lines.append(f"{indent}{os.path.basename(dirpath)}/")
             
@@ -1222,19 +1384,10 @@ def _next_subagent_id() -> int:
 # Import new tools
 from aru.tools.ranker import rank_files
 
-# Tools available to sub-agents (no delegate_task to prevent infinite nesting)
-_SUBAGENT_TOOLS = [
-    read_file,
-    write_file,
-    edit_file,
-    glob_search,
-    grep_search,
-    list_directory,
-    bash,
-    web_search,
-    web_fetch,
-    rank_files,
-]
+# Tools available to sub-agents (no delegate_task to prevent infinite nesting).
+# Populated after the async wrappers are defined further down; delegate_task
+# reads the current contents at call time, not at module-load time.
+_SUBAGENT_TOOLS: list = []
 
 
 async def delegate_task(task: str, context: str = "", agent_name: str = "") -> str:
@@ -1263,9 +1416,13 @@ async def delegate_task(task: str, context: str = "", agent_name: str = "") -> s
         agent_perm = None
         custom_agent_defs = get_ctx().custom_agent_defs
         _agent_name = str(agent_name).strip() if agent_name else ""
+        # Case-insensitive match for built-ins so "Explorer" / "EXPLORER" /
+        # "explorer " all hit the explorer branch. Custom agents still match
+        # by their exact declared key.
+        _builtin = _agent_name.lower()
 
         # Built-in explorer agent — fast, read-only codebase exploration
-        if _agent_name == "explorer":
+        if _builtin == "explorer":
             from aru.agents.explorer import create_explorer
             sub = create_explorer(task, context)
             sub.name = f"Explorer-{agent_id}"
@@ -1303,7 +1460,7 @@ Do not create documentation files unless explicitly asked.
                 markdown=True,
             )
 
-        label = f"Explorer-{agent_id}" if _agent_name == "explorer" else f"SubAgent-{agent_id}"
+        label = f"Explorer-{agent_id}" if _builtin == "explorer" else f"SubAgent-{agent_id}"
 
         async def _execute_with_streaming(agent_instance) -> str:
             """Run a sub-agent with streaming events for live progress display."""
@@ -1373,7 +1530,7 @@ Do not create documentation files unless explicitly asked.
             try:
                 from aru.permissions import permission_scope as _ps
                 # Recreate the agent for a clean retry
-                if _agent_name == "explorer":
+                if _builtin == "explorer":
                     from aru.agents.explorer import create_explorer
                     sub_retry = create_explorer(task, context)
                     sub_retry.name = f"Explorer-{agent_id}"
@@ -1395,15 +1552,92 @@ Do not create documentation files unless explicitly asked.
     return await asyncio.create_task(_run())
 
 
-# All tools as a list for easy import
+# ── Async tool wrappers ───────────────────────────────────────────────
+# Agents see these as the actual tools. Each wrapper offloads the blocking
+# sync implementation to a worker thread so Agno's event loop stays
+# responsive — and so multiple tool_uses in one turn actually run in
+# parallel instead of serializing on the loop.
+
+
+def _thread_tool(sync_fn):
+    """Wrap *sync_fn* as an async tool that runs on a worker thread.
+
+    ``functools.wraps`` copies ``__name__``/``__doc__`` so Agno introspects
+    the wrapper as if it were the original sync function — tool name and
+    signature match what the LLM already knows.
+    """
+
+    @functools.wraps(sync_fn)
+    async def wrapper(*args, **kwargs):
+        return await asyncio.to_thread(sync_fn, *args, **kwargs)
+
+    return wrapper
+
+
+@functools.wraps(glob_search)
+async def _glob_search_tool(pattern: str, directory: str = ".") -> str:
+    rg_result = await _glob_search_rg(pattern, directory)
+    if rg_result is not None:
+        return rg_result
+    return await asyncio.to_thread(_glob_search_python, pattern, directory)
+
+
+@functools.wraps(grep_search)
+async def _grep_search_tool(
+    pattern: str,
+    directory: str = ".",
+    file_glob: str = "",
+    context_lines: int = 10,
+) -> str:
+    rg_result = await _grep_search_rg(pattern, directory, file_glob, context_lines)
+    if rg_result is not None:
+        return rg_result
+    return await asyncio.to_thread(
+        _grep_search_python, pattern, directory, file_glob, context_lines
+    )
+
+
+_read_file_tool = _thread_tool(read_file)
+_write_file_tool = _thread_tool(write_file)
+_write_files_tool = _thread_tool(write_files)
+_edit_file_tool = _thread_tool(edit_file)
+_edit_files_tool = _thread_tool(edit_files)
+_list_directory_tool = _thread_tool(list_directory)
+
+
+async def read_files(paths: list[str], max_size: int = 12_000) -> str:
+    """Read many files in parallel. Use instead of multiple read_file calls when
+    you want to pull N files at once (e.g. after rank_files).
+
+    Args:
+        paths: List of file paths (absolute or relative) to read.
+        max_size: Max bytes per file before truncation. Default 12KB.
+    """
+    if not paths:
+        return "No paths provided."
+
+    async def _one(p: str) -> tuple[str, str]:
+        return p, await asyncio.to_thread(read_file, p, 0, 0, max_size)
+
+    results = await asyncio.gather(*(_one(p) for p in paths))
+    blocks = [f"=== {path} ===\n{content}" for path, content in results]
+    return "\n\n".join(blocks)
+
+
+_rank_files_tool = _thread_tool(rank_files)
+
+
+# All tools as a list for easy import — agents use the async wrappers.
 ALL_TOOLS = [
-    read_file,
-    read_file_smart,
-    write_file,
-    edit_file,
-    glob_search,
-    grep_search,
-    list_directory,
+    _read_file_tool,
+    read_files,
+    _write_file_tool,
+    _write_files_tool,
+    _edit_file_tool,
+    _edit_files_tool,
+    _glob_search_tool,
+    _grep_search_tool,
+    _list_directory_tool,
     bash,
     web_search,
     web_fetch,
@@ -1417,13 +1651,15 @@ from aru.tools.tasklist import create_task_list, update_task
 EXECUTOR_TOOLS = [
     create_task_list,
     update_task,
-    read_file,
-    read_file_smart,
-    write_file,
-    edit_file,
-    glob_search,
-    grep_search,
-    list_directory,
+    _read_file_tool,
+    read_files,
+    _write_file_tool,
+    _write_files_tool,
+    _edit_file_tool,
+    _edit_files_tool,
+    _glob_search_tool,
+    _grep_search_tool,
+    _list_directory_tool,
     bash,
     web_search,
     web_fetch,
@@ -1432,24 +1668,49 @@ EXECUTOR_TOOLS = [
 
 # General-purpose tools (full set — used as fallback)
 GENERAL_TOOLS = [
-    read_file,
-    read_file_smart,
-    write_file,
-    edit_file,
-    glob_search,
-    grep_search,
-    list_directory,
+    _read_file_tool,
+    read_files,
+    _write_file_tool,
+    _write_files_tool,
+    _edit_file_tool,
+    _edit_files_tool,
+    _glob_search_tool,
+    _grep_search_tool,
+    _list_directory_tool,
     bash,
     web_search,
     web_fetch,
     delegate_task,
 ]
 
-# Registry mapping tool name strings to function references
+# Populate subagent tool list now that async wrappers exist. delegate_task
+# reads this module-level variable when it fires, so the in-place update
+# takes effect for every future sub-agent run.
+_SUBAGENT_TOOLS[:] = [
+    _read_file_tool,
+    read_files,
+    _write_file_tool,
+    _write_files_tool,
+    _edit_file_tool,
+    _edit_files_tool,
+    _glob_search_tool,
+    _grep_search_tool,
+    _list_directory_tool,
+    bash,
+    web_search,
+    web_fetch,
+    _rank_files_tool,
+]
+
+# Registry mapping tool name strings to function references.
+# Keys follow the wrapper __name__, which functools.wraps sets to the
+# original sync function name (e.g. "read_file"), so lookups from the
+# LLM side resolve to the async wrapper transparently.
 TOOL_REGISTRY: dict[str, object] = {f.__name__: f for f in ALL_TOOLS}
 TOOL_REGISTRY["create_task_list"] = create_task_list
 TOOL_REGISTRY["update_task"] = update_task
-TOOL_REGISTRY["rank_files"] = rank_files
+TOOL_REGISTRY["rank_files"] = _rank_files_tool
+TOOL_REGISTRY["read_files"] = read_files
 
 
 def resolve_tools(tool_spec: list[str] | dict[str, bool]) -> list:
