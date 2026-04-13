@@ -96,22 +96,22 @@ nav:
       - Instalação: comecando/instalacao.md
       - Início Rápido: comecando/inicio-rapido.md
       - CLI: comecando/cli.md
+      - Comandos Customizados: comandos/customizados.md
   - Configuração:
       - Visão Geral: configuracao/index.md
       - Modelos e Providers: configuracao/modelos.md
       - Permissões: configuracao/permissoes.md
       - Regras (AGENTS.md): configuracao/regras.md
-      - MCP Servers: configuracao/mcp.md
   - Agentes:
       - Visão Geral: agentes/index.md
       - Agentes Customizados: agentes/customizados.md
       - Planejamento: agentes/planejamento.md
-  - Comandos e Skills:
-      - Comandos Customizados: comandos/customizados.md
-      - Skills: comandos/skills.md
+  - Subagentes: agentes/subagentes.md
+  - Skills: comandos/skills.md
   - Ferramentas:
-      - Ferramentas Integradas: ferramentas/index.md
-      - Ferramentas Customizadas: ferramentas/customizadas.md
+      - Visão Geral: ferramentas/index.md
+  - Ferramentas Customizadas: ferramentas/customizadas.md
+  - MCP: configuracao/mcp.md
   - Plugins:
       - Sistema de Plugins: plugins/index.md
       - Hooks: plugins/hooks.md
