@@ -13,6 +13,8 @@ An intelligent coding assistant for the terminal, powered by LLMs and [Agno](htt
 - **Task Planning** — Break down complex tasks into steps with automatic execution
 - **Multi-Provider** — Anthropic, OpenAI, Ollama, Groq, OpenRouter, DeepSeek, and others via custom configuration
 - **Custom Commands, Skills, and Agents** — Extend aru via the `.agents/` directory
+- **Custom Tools** — Add your own Python tools with a simple `@tool` decorator
+- **Plugin System** — OpenCode-compatible hooks for tool lifecycle, chat, permissions, and more
 - **MCP Support** — Integration with Model Context Protocol servers
 
 ## Quick Start
@@ -443,6 +445,116 @@ Each agent gets its own isolated "always" memory — approvals during an agent's
 #### Subagent mode
 
 Agents with `mode: subagent` can be referenced by the LLM via `delegate_task(task, agent="name")` but are not directly invocable from the CLI.
+
+### Custom Tools
+
+You can extend aru with your own Python tools. Drop a `.py` file in `.aru/tools/` (project) or `~/.aru/tools/` (global) — aru auto-discovers and registers every function found.
+
+```python
+# .aru/tools/deploy.py
+from aru.plugins import tool
+
+@tool(description="Deploy the current branch to an environment")
+def deploy(environment: str = "staging") -> str:
+    """Runs the deploy script and returns the output."""
+    import subprocess
+    result = subprocess.run(
+        ["./scripts/deploy.sh", environment],
+        capture_output=True, text=True,
+    )
+    return result.stdout or result.stderr
+```
+
+The LLM sees each tool as a first-class function — name, description, and typed parameters are inferred from the signature.
+
+#### Rules
+
+- **Decorator is optional.** A bare `def fn(...) -> str` with a docstring works too. Use `@tool(...)` when you want a custom description or to override a built-in.
+- **Parameters** are read from type hints; defaults become optional params.
+- **Return type** should be `str` (or something stringifiable) — the result is sent back to the LLM as tool output.
+- **Override built-ins** with `@tool(override=True)` if you want to replace, say, `bash` with your own implementation.
+- **Discovery paths** (later roots override earlier ones):
+  1. `~/.aru/tools/`
+  2. `.aru/tools/`
+  3. `~/.agents/tools/`
+  4. `.agents/tools/`
+
+Both sync and `async def` functions are supported.
+
+### Plugins
+
+For more control than custom tools — e.g. intercepting tool calls, mutating chat messages, injecting env vars into shell commands, or blocking permissions — use the plugin system. Plugins are Python files that return a `Hooks` object, mirroring OpenCode's hook pattern.
+
+```python
+# .aru/plugins/audit.py
+from aru.plugins import Hooks, PluginInput
+
+async def plugin(ctx: PluginInput, options: dict | None = None) -> Hooks:
+    hooks = Hooks()
+
+    @hooks.on("tool.execute.before")
+    async def before_tool(event):
+        print(f"[audit] running {event.tool_name} with {event.args}")
+
+    @hooks.on("tool.execute.after")
+    async def after_tool(event):
+        print(f"[audit] {event.tool_name} → ok")
+
+    @hooks.on("shell.env")
+    async def inject_env(event):
+        event.env["DEPLOY_TOKEN"] = "••••"
+
+    # You can also register tools directly from a plugin:
+    def greet(name: str) -> str:
+        """Say hello."""
+        return f"hello, {name}"
+    hooks.tools["greet"] = greet
+
+    return hooks
+```
+
+Save the file as `.aru/plugins/<name>.py` and aru will load it automatically at startup.
+
+#### Available hooks
+
+| Hook | When it fires | Typical use |
+|------|---------------|-------------|
+| `config` | After config is loaded | Read/adjust config |
+| `tool.execute.before` | Before any tool runs | Audit, block, mutate args |
+| `tool.execute.after` | After any tool runs | Log, post-process results |
+| `tool.definition` | When tool list is resolved | Modify tool descriptions/params |
+| `chat.message` | Before a user message is sent to the LLM | Rewrite the message |
+| `chat.params` | Before the LLM call | Adjust `temperature`, `max_tokens` |
+| `chat.system.transform` | Before the LLM call | Modify the system prompt |
+| `chat.messages.transform` | Before the LLM call | Modify the full message history |
+| `command.execute.before` | Before a slash command runs | Block or rewrite commands |
+| `permission.ask` | Before a permission prompt | Auto-allow/deny |
+| `shell.env` | Before `bash` runs | Inject env vars |
+| `session.compact` | Before context compaction | React to compaction |
+| `event` | Any published event | Generic subscription |
+
+Handlers can be sync or `async`. They run sequentially so each can mutate the event before the next handler sees it. Raise `PermissionError` to block an action.
+
+#### Loading plugins
+
+Plugins come from three sources:
+
+1. **Auto-discovery** — `.aru/plugins/*.py`, `.agents/plugins/*.py`, and the same paths under `~/`
+2. **Config** — explicit list in `aru.json`:
+
+   ```json
+   {
+     "plugins": [
+       "my-package-plugin",
+       ["./.aru/plugins/audit.py", { "verbose": true }]
+     ]
+   }
+   ```
+
+   The second form passes options to the plugin as the `options` argument.
+3. **Entry points** — installed packages can register via the `aru.plugins` entry point group
+
+Every plugin file must export a `plugin(ctx, options)` function (sync or async) that returns a `Hooks` instance.
 
 ### MCP Support (Model Context Protocol)
 
