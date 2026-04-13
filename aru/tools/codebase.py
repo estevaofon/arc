@@ -56,19 +56,112 @@ def _get_small_model_ref() -> str:
 
 
 
-def _format_diff(old_string: str, new_string: str) -> Group:
-    """Format old/new strings as a colored diff (red background for deletions, green for additions)."""
-    parts = []
-    if old_string:
-        for line in old_string.splitlines():
-            parts.append(Text.assemble(
-                ("- " + line, "on red"),
-            ))
-    if new_string:
-        for line in new_string.splitlines():
-            parts.append(Text.assemble(
-                ("+ " + line, "white on green"),
-            ))
+_HUNK_HEADER_RE = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
+
+_DIFF_STYLE_DEL = "white on #5f1f1f"
+_DIFF_STYLE_ADD = "white on #1f5f1f"
+_DIFF_STYLE_CTX = "default"
+_DIFF_STYLE_GUTTER = "bright_black"
+_DIFF_STYLE_GUTTER_DEL = "white on #3f0f0f"
+_DIFF_STYLE_GUTTER_ADD = "white on #0f3f0f"
+_DIFF_STYLE_HEADER = "cyan"
+
+
+def _format_unified_diff(
+    old_content: str,
+    new_content: str,
+    file_path: str = "",
+    context_lines: int = 3,
+    max_total_lines: int = 200,
+) -> Group:
+    """Render a unified diff of the full file before/after, with line numbers,
+    hunk headers, and colored backgrounds for +/- lines.
+
+    Handles new-file creation (empty old_content) and deletions (empty new_content).
+    """
+    old_lines = old_content.splitlines()
+    new_lines = new_content.splitlines()
+
+    import difflib
+    diff = list(difflib.unified_diff(
+        old_lines, new_lines,
+        n=context_lines, lineterm="",
+    ))
+
+    parts: list = []
+    if file_path:
+        parts.append(Text(file_path, style="bold"))
+        parts.append(Text())
+
+    if not diff:
+        parts.append(Text("(no changes)", style="dim"))
+        return Group(*parts)
+
+    body = [l for l in diff if not l.startswith("---") and not l.startswith("+++")]
+
+    adds = sum(1 for l in body if l.startswith("+"))
+    dels = sum(1 for l in body if l.startswith("-"))
+    parts.append(Text.assemble(
+        (f"+{adds}", "green"),
+        ("  ", ""),
+        (f"-{dels}", "red"),
+    ))
+    parts.append(Text())
+
+    old_no = new_no = 0
+    shown = 0
+
+    for idx, line in enumerate(body):
+        if shown >= max_total_lines:
+            remaining = len(body) - idx
+            parts.append(Text(f"… {remaining} more diff lines …", style="dim italic"))
+            break
+
+        m = _HUNK_HEADER_RE.match(line)
+        if m:
+            old_no = int(m.group(1))
+            new_no = int(m.group(2))
+            if shown > 0:
+                parts.append(Text())  # blank separator between hunks
+            parts.append(Text(line, style=_DIFF_STYLE_HEADER))
+            shown += 1
+            continue
+
+        if not line:
+            continue
+
+        marker = line[0]
+        content = line[1:]
+
+        if marker == "+":
+            gutter = f"{'':>4} {new_no:>4} "
+            row = Text.assemble(
+                (gutter, _DIFF_STYLE_GUTTER_ADD),
+                ("+ ", _DIFF_STYLE_ADD),
+                (content, _DIFF_STYLE_ADD),
+            )
+            new_no += 1
+        elif marker == "-":
+            gutter = f"{old_no:>4} {'':>4} "
+            row = Text.assemble(
+                (gutter, _DIFF_STYLE_GUTTER_DEL),
+                ("- ", _DIFF_STYLE_DEL),
+                (content, _DIFF_STYLE_DEL),
+            )
+            old_no += 1
+        else:
+            gutter = f"{old_no:>4} {new_no:>4} "
+            row = Text.assemble(
+                (gutter, _DIFF_STYLE_GUTTER),
+                ("  ", _DIFF_STYLE_CTX),
+                (content, _DIFF_STYLE_CTX),
+            )
+            old_no += 1
+            new_no += 1
+
+        parts.append(row)
+        shown += 1
+
     return Group(*parts)
 
 
@@ -212,10 +305,13 @@ def write_file(file_path: str, content: str) -> str:
         file_path: Path to the file to write.
         content: The content to write to the file.
     """
-    preview = content[:500] + ("..." if len(content) > 500 else "")
-    header = Text(file_path, style="bold")
-    diff = _format_diff("", preview)
-    if not check_permission("write", file_path, Group(header, Text(), diff)):
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            existing = f.read()
+    except (FileNotFoundError, UnicodeDecodeError, OSError):
+        existing = ""
+    diff = _format_unified_diff(existing, content, file_path)
+    if not check_permission("write", file_path, diff):
         return f"PERMISSION DENIED by user: write to {file_path}. Do NOT retry this operation. Stop and ask the user for new instructions."
     try:
         _checkpoint_file(file_path)
@@ -242,9 +338,12 @@ def write_files(file_list: list[dict]) -> str:
     for e in file_list:
         p = e.get("path", "<missing>")
         content = e.get("content", "")
-        preview = content[:300] + ("..." if len(content) > 300 else "")
-        parts.append(Text(p, style="bold dim"))
-        parts.append(_format_diff("", preview))
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                existing = f.read()
+        except (FileNotFoundError, UnicodeDecodeError, OSError):
+            existing = ""
+        parts.append(_format_unified_diff(existing, content, p))
         parts.append(Text())
     if not check_permission("write", ", ".join(e.get("path", "") for e in file_list), Group(*parts)):
         return f"PERMISSION DENIED by user: batch write of {len(file_list)} files. Do NOT retry this operation. Stop and ask the user for new instructions."
@@ -312,15 +411,15 @@ def edit_file(file_path: str, old_string: str, new_string: str) -> str:
         old_string: The exact text to find and replace. Must be unique in the file.
         new_string: The replacement text.
     """
-    header = Text(file_path, style="bold")
-    diff = _format_diff(old_string, new_string)
-    if not check_permission("edit", file_path, Group(header, Text(), diff)):
-        return f"PERMISSION DENIED by user: edit {file_path}. Do NOT retry this operation. Stop and ask the user for new instructions."
     try:
-        _checkpoint_file(file_path)
         with open(file_path, "r", encoding="utf-8") as f:
             content = f.read()
+    except FileNotFoundError:
+        return f"Error: File not found: {file_path}"
+    except Exception as e:
+        return f"Error reading file: {e}"
 
+    try:
         count = content.count(old_string)
         if count == 0:
             # Provide context: show closest matching region to help the LLM retry
@@ -343,19 +442,25 @@ def edit_file(file_path: str, old_string: str, new_string: str) -> str:
             return f"Error: old_string found {count} times in {file_path}. Must be unique."
 
         new_content = content.replace(old_string, new_string, 1)
+    except Exception as e:
+        return f"Error editing file: {e}"
+
+    diff = _format_unified_diff(content, new_content, file_path)
+    if not check_permission("edit", file_path, diff):
+        return f"PERMISSION DENIED by user: edit {file_path}. Do NOT retry this operation. Stop and ask the user for new instructions."
+
+    try:
+        _checkpoint_file(file_path)
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(new_content)
         _notify_file_mutation()
 
-        # Return compact diff instead of just success message
         diff_text = _compact_diff(old_string, new_string, file_path)
         if diff_text:
             return f"Edited {file_path}\n{diff_text}"
         return f"Edited {file_path}"
-    except FileNotFoundError:
-        return f"Error: File not found: {file_path}"
     except Exception as e:
-        return f"Error editing file: {e}"
+        return f"Error writing file: {e}"
 
 
 def edit_files(edits: list[dict]) -> str:
@@ -369,55 +474,62 @@ def edit_files(edits: list[dict]) -> str:
         edits: List of dicts with 'path' (file path), 'old_string' (text to find), and 'new_string' (replacement).
                Example: [{"path": "src/main.py", "old_string": "foo", "new_string": "bar"}]
     """
-    parts = [Text(f"Apply {len(edits)} edits:", style="bold"), Text()]
-    for e in edits:
-        p = e.get("path", "<missing>")
-        old = e.get("old_string", "")
-        new = e.get("new_string", "")
-        parts.append(Text(p, style="bold dim"))
-        parts.append(_format_diff(old, new))
-        parts.append(Text())
-    if not check_permission("edit", ", ".join(e.get("path", "") for e in edits), Group(*parts)):
-        return f"PERMISSION DENIED by user: batch edit of {len(edits)} files. Do NOT retry this operation. Stop and ask the user for new instructions."
-
-    results = []
-    errors = []
-    # Cache file contents to support multiple edits to the same file
-    cache: dict[str, str] = {}
-
+    # Dry-run: compute final content for each file so we can show a single
+    # coalesced diff covering all edits (multiple edits to the same file fold
+    # into one hunk view).
+    original: dict[str, str] = {}
+    preview: dict[str, str] = {}
+    preview_errors: list[str] = []
     for entry in edits:
         path = entry.get("path", "")
         old = entry.get("old_string", "")
         new = entry.get("new_string", "")
         if not path or not old:
-            errors.append(f"Error: missing 'path' or 'old_string' in entry")
+            preview_errors.append(f"{path or '<missing>'}: missing 'path' or 'old_string'")
             continue
-        try:
-            if path not in cache:
-                _checkpoint_file(path)
+        if path not in preview:
+            try:
                 with open(path, "r", encoding="utf-8") as f:
-                    cache[path] = f.read()
-
-            content = cache[path]
-            count = content.count(old)
-            if count == 0:
-                errors.append(f"{path}: old_string not found")
+                    original[path] = preview[path] = f.read()
+            except FileNotFoundError:
+                preview_errors.append(f"{path}: file not found")
                 continue
-            if count > 1:
-                errors.append(f"{path}: old_string found {count} times, must be unique")
+            except Exception as e:
+                preview_errors.append(f"{path}: {e}")
                 continue
+        buf = preview[path]
+        cnt = buf.count(old)
+        if cnt == 0:
+            preview_errors.append(f"{path}: old_string not found")
+            continue
+        if cnt > 1:
+            preview_errors.append(f"{path}: old_string found {cnt} times, must be unique")
+            continue
+        preview[path] = buf.replace(old, new, 1)
 
-            cache[path] = content.replace(old, new, 1)
-            results.append(path)
-        except FileNotFoundError:
-            errors.append(f"{path}: file not found")
-        except Exception as e:
-            errors.append(f"{path}: {e}")
+    parts = [Text(f"Apply {len(edits)} edits:", style="bold"), Text()]
+    for path in preview:
+        parts.append(_format_unified_diff(original[path], preview[path], path))
+        parts.append(Text())
+    for err in preview_errors:
+        parts.append(Text(err, style="red"))
+    if not check_permission("edit", ", ".join(e.get("path", "") for e in edits), Group(*parts)):
+        return f"PERMISSION DENIED by user: batch edit of {len(edits)} files. Do NOT retry this operation. Stop and ask the user for new instructions."
 
-    # Flush all modified files
+    errors = list(preview_errors)
+    results = [
+        entry.get("path", "")
+        for entry in edits
+        if entry.get("path") in preview and entry.get("old_string")
+    ]
+
+    # Flush preview state to disk
     written = set()
-    for path, content in cache.items():
+    for path, content in preview.items():
+        if original[path] == content:
+            continue  # no-op, nothing changed
         try:
+            _checkpoint_file(path)
             with open(path, "w", encoding="utf-8") as f:
                 f.write(content)
             written.add(path)

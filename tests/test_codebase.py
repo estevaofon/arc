@@ -5,7 +5,7 @@ from aru.tools.codebase import (
     edit_file, list_directory,
     get_project_tree, _is_long_running,
     _html_to_text, clear_read_cache,
-    _format_diff,
+    _format_unified_diff,
     resolve_tools, TOOL_REGISTRY, GENERAL_TOOLS,
     delegate_task, set_custom_agents,
 )
@@ -463,99 +463,80 @@ class TestSkipPermissions:
             set_skip_permissions(False)
 
 
-class TestFormatDiff:
-    """Tests for _format_diff — unified diff rendering of old/new strings."""
+class TestFormatUnifiedDiff:
+    """Tests for _format_unified_diff — unified diff against full file contents."""
 
-    def test_multiline_deletion(self):
-        """Multiline old_string produces a red '- ' line per original line."""
-        old = "line1\nline2\nline3"
-        group = _format_diff(old, "")
+    @staticmethod
+    def _render(group) -> str:
+        return "\n".join(str(r) for r in group.renderables)
 
-        rendered = "\n".join(str(r) for r in group.renderables)
-        assert rendered.count("- line") == 3
-        assert "- line1" in rendered
-        assert "- line2" in rendered
-        assert "- line3" in rendered
-        assert "+ " not in rendered
+    def test_no_changes(self):
+        group = _format_unified_diff("same\ntext\n", "same\ntext\n", "f.txt")
+        rendered = self._render(group)
+        assert "(no changes)" in rendered
 
-    def test_multiline_addition(self):
-        """Multiline new_string produces a green '+ ' line per new line."""
-        new = "alpha\nbeta\ngamma"
-        group = _format_diff("", new)
-
-        rendered = "\n".join(str(r) for r in group.renderables)
-        assert rendered.count("+ alpha") == 1
-        assert rendered.count("+ beta") == 1
-        assert rendered.count("+ gamma") == 1
+    def test_pure_addition_new_file(self):
+        """Empty old_content (new file creation) shows all lines as additions."""
+        group = _format_unified_diff("", "alpha\nbeta\ngamma\n", "new.txt")
+        rendered = self._render(group)
         assert "+ alpha" in rendered
         assert "+ beta" in rendered
         assert "+ gamma" in rendered
         assert "- " not in rendered
+        assert "+3" in rendered and "-0" in rendered
 
-    def test_both_sides_produces_combined_output(self):
-        """Providing both old and new strings renders deletions followed by additions."""
-        old = "foo\nbar"
-        new = "foo\nbaz"
-        group = _format_diff(old, new)
+    def test_pure_deletion(self):
+        group = _format_unified_diff("doomed\nlines\n", "", "old.txt")
+        rendered = self._render(group)
+        assert "- doomed" in rendered
+        assert "- lines" in rendered
+        assert "+0" in rendered and "-2" in rendered
 
-        rendered = "\n".join(str(r) for r in group.renderables)
-        # The function renders ALL old lines as deletions, ALL new lines as additions.
-        # It does not perform line-level diffing, so even unchanged lines appear twice.
-        assert "- foo" in rendered
-        assert "- bar" in rendered
-        assert "+ foo" in rendered
-        assert "+ baz" in rendered
-        # Deletions come first, then additions
-        minus_idx = rendered.index("- ")
-        plus_idx = rendered.index("+ ")
-        assert minus_idx < plus_idx
+    def test_hunk_header_present(self):
+        """Every non-empty diff contains a @@ hunk header."""
+        group = _format_unified_diff("a\nb\nc\n", "a\nB\nc\n", "f.txt")
+        rendered = self._render(group)
+        assert "@@" in rendered
 
-    def test_no_empty_diff_both_empty(self):
-        """When both old and new are empty the diff group is empty (no-empty-diff guard)."""
-        group = _format_diff("", "")
-        assert len(group.renderables) == 0
+    def test_single_line_change_preserves_context(self):
+        """A single-line change surrounded by unchanged lines shows the context."""
+        old = "\n".join(f"line{i}" for i in range(1, 11))
+        new_lines = [f"line{i}" for i in range(1, 11)]
+        new_lines[4] = "LINE5_CHANGED"
+        new = "\n".join(new_lines)
 
-    def test_no_empty_diff_both_none_equivalent(self):
-        """Passing empty strings (not None) still results in no empty-diff."""
-        group = _format_diff("", "")
-        assert len(group.renderables) == 0
+        group = _format_unified_diff(old, new, "sample.txt")
+        rendered = self._render(group)
 
-    def test_empty_old_string_only_new(self):
-        """Empty old_string with new content renders only additions."""
-        group = _format_diff("", "only added")
-        rendered = "\n".join(str(r) for r in group.renderables)
-        assert "+ only added" in rendered
+        # The unchanged neighbors must appear as context lines (not stripped)
+        assert "line3" in rendered
+        assert "line4" in rendered
+        assert "line6" in rendered
+        assert "line7" in rendered
+        # The change itself
+        assert "- line5" in rendered
+        assert "+ LINE5_CHANGED" in rendered
+        assert "+1" in rendered and "-1" in rendered
 
-    def test_empty_new_string_only_old(self):
-        """Empty new_string with old content renders only deletions."""
-        group = _format_diff("only removed", "")
-        rendered = "\n".join(str(r) for r in group.renderables)
-        assert "- only removed" in rendered
+    def test_line_numbers_rendered(self):
+        """Gutter shows line numbers for the first hunk."""
+        group = _format_unified_diff("a\nb\nc\n", "a\nB\nc\n", "f.txt")
+        rendered = self._render(group)
+        # Old line 2 and new line 2 should both appear in the gutter
+        assert "2" in rendered
 
-    def test_single_line_deletion(self):
-        """Single-line old_string produces exactly one deletion line."""
-        group = _format_diff("solo line\n", "")
-        rendered = "\n".join(str(r) for r in group.renderables)
-        assert rendered.count("- ") == 1
-        assert "- solo line" in rendered
+    def test_large_diff_is_truncated(self):
+        """Very large diffs show a truncation hint."""
+        old = "\n".join(f"old{i}" for i in range(500))
+        new = "\n".join(f"new{i}" for i in range(500))
+        group = _format_unified_diff(old, new, "big.txt", max_total_lines=30)
+        rendered = self._render(group)
+        assert "more diff lines" in rendered
 
-    def test_single_line_addition(self):
-        """Single-line new_string produces exactly one addition line."""
-        group = _format_diff("", "brand new\n")
-        rendered = "\n".join(str(r) for r in group.renderables)
-        assert rendered.count("+ ") == 1
-        assert "+ brand new" in rendered
-
-    def test_line_counting_matches_actual_lines(self):
-        """Line count in rendered output matches the number of non-empty lines in input."""
-        old_lines = ["def foo():", "    pass", "    return None"]
-        new_lines = ["def foo():", "    return True", "    raise NotImplemented"]
-        group = _format_diff("\n".join(old_lines), "\n".join(new_lines))
-
-        rendered = "\n".join(str(r) for r in group.renderables)
-        # 3 old lines → 3 deletion lines; 3 new lines → 3 addition lines
-        assert rendered.count("- ") == 3
-        assert rendered.count("+ ") == 3
+    def test_file_path_header(self):
+        group = _format_unified_diff("a\n", "b\n", "path/to/file.py")
+        rendered = self._render(group)
+        assert "path/to/file.py" in rendered
 
 
 class TestResolveTools:
