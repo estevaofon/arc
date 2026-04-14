@@ -176,6 +176,14 @@ class Session:
         # Transient flag set by runner when a turn ends with pending plan steps;
         # surfaced as a warning in the next turn's plan reminder, then cleared.
         self._pending_plan_warning: bool = False
+        # Monotonic plan generation — bumped whenever the plan is replaced or
+        # cleared. update_plan_step captures this and only its rendering loop
+        # consults it; lets the runner tell stale renders apart from live ones.
+        self._plan_generation: int = 0
+        # Set by update_plan_step / set_plan / clear_plan whenever plan state
+        # changes and a render should happen. Runner flushes this once per
+        # tool batch so multiple mutations in one batch produce one panel.
+        self._plan_render_pending: bool = False
         self.model_ref: str = DEFAULT_MODEL  # provider/model format
         self.cwd: str = os.getcwd()
         self.created_at: str = datetime.now().isoformat(timespec="milliseconds")
@@ -230,13 +238,22 @@ class Session:
         self.current_plan = plan_content
         self.plan_task = task
         self.plan_steps = parse_plan_steps(plan_content)
+        self._plan_generation += 1
+        self._plan_render_pending = True
 
     def clear_plan(self):
         """Clear the active plan."""
+        had_plan = bool(self.plan_steps) or self.current_plan is not None
         self.current_plan = None
         self.plan_task = None
         self.plan_steps = []
         self._pending_plan_warning = False
+        if had_plan:
+            self._plan_generation += 1
+        # Clearing alone doesn't need a render — the replacement set_plan
+        # (or end-of-turn) will handle it. But mark pending so an explicit
+        # clear without a replacement still flushes any stale queued state.
+        self._plan_render_pending = False
 
     def track_tokens(self, metrics):
         """Accumulate token usage from a RunCompletedEvent.metrics."""

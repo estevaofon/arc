@@ -42,6 +42,14 @@ def _build_plan_reminder(session) -> str | None:
     if not steps:
         return None
 
+    # Auto-retire plans that have nothing left to execute. Leaving a fully-
+    # terminal plan in the reminder makes the agent re-surface it on the next
+    # turn — it may even call update_plan_step on old steps, re-rendering the
+    # stale panel and confusing the user who already moved on to a new task.
+    if all(s.status in ("completed", "skipped", "failed") for s in steps):
+        session.clear_plan()
+        return None
+
     pending = sum(1 for s in steps if s.status == "pending")
     done = sum(1 for s in steps if s.status == "completed")
     lines = [
@@ -411,6 +419,15 @@ async def run_agent_capture(agent, message: str, session=None, lightweight: bool
                         # tool calls start a new round.
                         if tool_result_msgs and tool_result_msgs[-1]["_open"]:
                             tool_result_msgs[-1]["_open"] = False
+                        # Flush coalesced plan-panel render. Multiple
+                        # update_plan_step calls in the same batch (and any
+                        # enter_plan_mode that replaces the plan mid-batch)
+                        # collapse into a single panel showing final state.
+                        try:
+                            from aru.tools.tasklist import flush_plan_render
+                            flush_plan_render(session)
+                        except Exception:
+                            pass
                     live.update(display)
 
                 elif isinstance(event, RunContentEvent):

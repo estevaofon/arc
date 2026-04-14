@@ -133,6 +133,22 @@ def update_task(index: int, status: str) -> str:
 _PLAN_STATUSES = ("in_progress", "completed", "failed", "skipped")
 
 
+def flush_plan_render(session) -> None:
+    """Render the plan panel once if the session has a pending update.
+
+    Called by the runner after each tool batch. Coalesces multiple
+    update_plan_step mutations into a single visible panel and ensures that
+    if enter_plan_mode replaced the plan mid-batch, only the new plan shows.
+    """
+    if session is None or not getattr(session, "_plan_render_pending", False):
+        return
+    session._plan_render_pending = False
+    steps = getattr(session, "plan_steps", None)
+    if not steps:
+        return
+    _show(_render_plan_steps(steps))
+
+
 def _render_plan_steps(steps: list) -> Panel:
     """Render the macro plan_steps list as a Rich panel."""
     icons = {
@@ -187,8 +203,11 @@ def update_plan_step(index: int, status: str) -> str:
         return f"Error: Plan step {index} not found. Valid indices: {valid}."
 
     target.status = status
-    panel = _render_plan_steps(session.plan_steps)
-    _show(panel)
+    # Defer rendering: mark the session so the runner flushes a single plan
+    # panel at the end of the current tool batch. Rendering per-call causes
+    # stale plans to reappear when enter_plan_mode is called in the same
+    # batch (the old plan renders, then gets replaced moments later).
+    session._plan_render_pending = True
 
     pending = [s for s in session.plan_steps if s.status == "pending"]
     if not pending:
