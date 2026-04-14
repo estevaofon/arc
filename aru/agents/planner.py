@@ -1,17 +1,8 @@
-"""Planning agent - analyzes codebase and creates implementation plans."""
+"""Plan reviewer — one-shot scope check, no loop, no tools."""
 
 from agno.agent import Agent
-from agno.compression.manager import CompressionManager
 
-from aru.agents.base import build_instructions
 from aru.providers import create_model
-from aru.tools.codebase import (
-    _glob_search_tool,
-    _grep_search_tool,
-    _list_directory_tool,
-    _read_file_tool,
-    read_files,
-)
 from aru.runtime import get_ctx
 
 REVIEWER_INSTRUCTIONS = """\
@@ -36,12 +27,6 @@ CRITICAL — preserve the original plan text:
 Return ONLY the markdown plan. No explanation, no preamble.\
 """
 
-# Planner uses read-only tools only — no write/edit/bash
-PLANNER_TOOLS = [
-    _read_file_tool, read_files,
-    _glob_search_tool, _grep_search_tool, _list_directory_tool,
-]
-
 
 async def review_plan(request: str, plan: str) -> str:
     """Review a generated plan against the original request, trimming scope creep.
@@ -63,27 +48,3 @@ async def review_plan(request: str, plan: str) -> str:
     except Exception:
         pass
     return plan
-
-
-def create_planner(model_ref: str = "anthropic/claude-sonnet-4-5", extra_instructions: str = "") -> Agent:
-    """Create and return the planner agent.
-
-    Args:
-        model_ref: Provider/model reference (e.g., "anthropic/claude-sonnet-4-5", "ollama/llama3.1").
-        extra_instructions: Additional instructions to append.
-    """
-    return Agent(
-        name="Planner",
-        model=create_model(model_ref, max_tokens=4096),
-        tools=PLANNER_TOOLS,
-        instructions=build_instructions("planner", extra_instructions),
-        markdown=True,
-        # Compress tool results after 6 uncompressed tool calls to save tokens
-        compress_tool_results=True,
-        compression_manager=CompressionManager(
-            model=create_model(get_ctx().small_model_ref, max_tokens=1024),
-            compress_tool_results=True,
-            compress_tool_results_limit=25,
-        ),
-        tool_call_limit=None,
-    )

@@ -128,3 +128,77 @@ def update_task(index: int, status: str) -> str:
         return f"Subtask {index} → {status}. Next: subtask {next_task['index']} — {next_task['description']}"
 
     return f"Subtask {index} → {status}."
+
+
+_PLAN_STATUSES = ("in_progress", "completed", "failed", "skipped")
+
+
+def _render_plan_steps(steps: list) -> Panel:
+    """Render the macro plan_steps list as a Rich panel."""
+    icons = {
+        "completed": "[bold green]\u2713[/bold green]",
+        "in_progress": "[bold yellow]~[/bold yellow]",
+        "failed": "[bold red]\u2717[/bold red]",
+        "skipped": "[dim]\u00b7[/dim]",
+    }
+    styles = {
+        "completed": "dim",
+        "in_progress": "bold",
+        "failed": "red",
+        "skipped": "dim italic",
+    }
+    lines = []
+    for s in steps:
+        icon = icons.get(s.status, "[dim]\u25cb[/dim]")
+        style = styles.get(s.status, "dim")
+        lines.append(Text.from_markup(f"  {icon} {s.index}. {s.description}", style=style))
+    return Panel(
+        Group(*lines),
+        title="[bold cyan]Plan steps[/bold cyan]",
+        border_style="cyan",
+        expand=True,
+    )
+
+
+def update_plan_step(index: int, status: str) -> str:
+    """Update the status of a macro plan step. Call after completing each step of an active plan.
+
+    Use this when a PLAN ACTIVE system reminder is in your context. Mark each
+    step as you finish it. Status options:
+      - in_progress: starting work on this step
+      - completed: step done successfully
+      - failed: step could not be completed
+      - skipped: step intentionally not executed (no longer needed)
+
+    Args:
+        index: Plan step number (1-based, matches the reminder).
+        status: New status (in_progress | completed | failed | skipped).
+    """
+    session = get_ctx().session
+    if session is None or not getattr(session, "plan_steps", None):
+        return "Error: No active plan. Use enter_plan_mode(task) or /plan to create one first."
+
+    if status not in _PLAN_STATUSES:
+        return f"Error: Invalid status '{status}'. Use: {', '.join(_PLAN_STATUSES)}."
+
+    target = next((s for s in session.plan_steps if s.index == index), None)
+    if target is None:
+        valid = ", ".join(str(s.index) for s in session.plan_steps)
+        return f"Error: Plan step {index} not found. Valid indices: {valid}."
+
+    target.status = status
+    panel = _render_plan_steps(session.plan_steps)
+    _show(panel)
+
+    pending = [s for s in session.plan_steps if s.status == "pending"]
+    if not pending:
+        done = sum(1 for s in session.plan_steps if s.status == "completed")
+        failed = sum(1 for s in session.plan_steps if s.status == "failed")
+        skipped = sum(1 for s in session.plan_steps if s.status == "skipped")
+        return (
+            f"All plan steps finished ({done} completed, {failed} failed, {skipped} skipped). "
+            f"Output a brief summary of what was changed."
+        )
+
+    next_step = pending[0]
+    return f"Step {index} -> {status}. Next: step {next_step.index} - {next_step.description}"

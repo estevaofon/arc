@@ -173,6 +173,9 @@ class Session:
         self.current_plan: str | None = None
         self.plan_task: str | None = None
         self.plan_steps: list[PlanStep] = []
+        # Transient flag set by runner when a turn ends with pending plan steps;
+        # surfaced as a warning in the next turn's plan reminder, then cleared.
+        self._pending_plan_warning: bool = False
         self.model_ref: str = DEFAULT_MODEL  # provider/model format
         self.cwd: str = os.getcwd()
         self.created_at: str = datetime.now().isoformat(timespec="milliseconds")
@@ -233,6 +236,7 @@ class Session:
         self.current_plan = None
         self.plan_task = None
         self.plan_steps = []
+        self._pending_plan_warning = False
 
     def track_tokens(self, metrics):
         """Accumulate token usage from a RunCompletedEvent.metrics."""

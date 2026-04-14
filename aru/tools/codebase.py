@@ -1535,8 +1535,16 @@ async def delegate_task(task: str, context: str = "", agent_name: str = "") -> s
 
         # Built-in explorer agent — fast, read-only codebase exploration
         if _builtin == "explorer":
-            from aru.agents.explorer import create_explorer
-            sub = create_explorer(task, context)
+            from aru.agent_factory import create_agent_from_spec
+            from aru.agents.catalog import AGENTS
+            extra = f"The current working directory is: {cwd}\n"
+            if context:
+                extra += f"\nAdditional context:\n{context}\n"
+            sub = create_agent_from_spec(
+                AGENTS["explorer"],
+                session=get_ctx().session,
+                extra_instructions=extra,
+            )
             sub.name = f"Explorer-{agent_id}"
         elif _agent_name and _agent_name in custom_agent_defs:
             agent_def = custom_agent_defs[_agent_name]
@@ -1643,8 +1651,16 @@ Do not create documentation files unless explicitly asked.
                 from aru.permissions import permission_scope as _ps
                 # Recreate the agent for a clean retry
                 if _builtin == "explorer":
-                    from aru.agents.explorer import create_explorer
-                    sub_retry = create_explorer(task, context)
+                    from aru.agent_factory import create_agent_from_spec
+                    from aru.agents.catalog import AGENTS
+                    extra = f"The current working directory is: {cwd}\n"
+                    if context:
+                        extra += f"\nAdditional context:\n{context}\n"
+                    sub_retry = create_agent_from_spec(
+                        AGENTS["explorer"],
+                        session=get_ctx().session,
+                        extra_instructions=extra,
+                    )
                     sub_retry.name = f"Explorer-{agent_id}"
                 else:
                     sub_retry = Agent(
@@ -1756,13 +1772,16 @@ ALL_TOOLS = [
     delegate_task,
 ]
 
-# Task list tools for executor subtask tracking
-from aru.tools.tasklist import create_task_list, update_task
+# Task list tools for executor subtask tracking and macro plan tracking
+from aru.tools.plan_mode import enter_plan_mode
+from aru.tools.tasklist import create_task_list, update_plan_step, update_task
 
 # Executor tools — full write/execute capability
 EXECUTOR_TOOLS = [
     create_task_list,
     update_task,
+    update_plan_step,
+    enter_plan_mode,
     _read_file_tool,
     read_files,
     _write_file_tool,
@@ -1780,6 +1799,10 @@ EXECUTOR_TOOLS = [
 
 # General-purpose tools (full set — used as fallback)
 GENERAL_TOOLS = [
+    create_task_list,
+    update_task,
+    update_plan_step,
+    enter_plan_mode,
     _read_file_tool,
     read_files,
     _write_file_tool,
@@ -1793,6 +1816,26 @@ GENERAL_TOOLS = [
     web_search,
     web_fetch,
     delegate_task,
+]
+
+# Planner tools — read-only subset (no write/edit/bash/delegate)
+PLANNER_TOOLS = [
+    _read_file_tool,
+    read_files,
+    _glob_search_tool,
+    _grep_search_tool,
+    _list_directory_tool,
+]
+
+# Explorer tools — read-only with bash and ranker (subagent for fast research)
+EXPLORER_TOOLS = [
+    _read_file_tool,
+    read_files,
+    _glob_search_tool,
+    _grep_search_tool,
+    _list_directory_tool,
+    bash,
+    _rank_files_tool,
 ]
 
 # Populate subagent tool list now that async wrappers exist. delegate_task
@@ -1821,6 +1864,8 @@ _SUBAGENT_TOOLS[:] = [
 TOOL_REGISTRY: dict[str, object] = {f.__name__: f for f in ALL_TOOLS}
 TOOL_REGISTRY["create_task_list"] = create_task_list
 TOOL_REGISTRY["update_task"] = update_task
+TOOL_REGISTRY["update_plan_step"] = update_plan_step
+TOOL_REGISTRY["enter_plan_mode"] = enter_plan_mode
 TOOL_REGISTRY["rank_files"] = _rank_files_tool
 TOOL_REGISTRY["read_files"] = read_files
 

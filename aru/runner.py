@@ -1,29 +1,68 @@
-"""Agent execution: streaming display orchestration, plan step execution."""
+"""Agent execution: catalog-driven entry point, streaming, plan reminder injection."""
 
 from __future__ import annotations
 
 import asyncio
 import os
-import re
 from dataclasses import dataclass, field
 
 from rich.live import Live
 from rich.markdown import Markdown
-from rich.panel import Panel
 from rich.text import Text
 
-from aru.commands import ask_yes_no
 from aru.display import (
     StatusBar,
     StreamingDisplay,
     _format_tool_label,
     console,
 )
-from aru.permissions import get_skip_permissions
 
 
 # Categories of tools that modify files (for highlighting in history)
 _MUTATION_TOOLS = {"write_file", "edit_file", "bash"}
+
+_PLAN_STEP_ICONS = {
+    "completed": "\u2713",
+    "in_progress": "~",
+    "failed": "\u2717",
+    "skipped": "\u00b7",
+}
+
+
+def _build_plan_reminder(session) -> str | None:
+    """Build a system-reminder block listing pending/completed plan steps.
+
+    Mirrors the Claude Code TodoWrite reminder pattern: state lives in the
+    session, the model sees the current snapshot every turn and updates it
+    via update_plan_step. Returns None when no plan is active.
+    """
+    if session is None:
+        return None
+    steps = getattr(session, "plan_steps", None)
+    if not steps:
+        return None
+
+    pending = sum(1 for s in steps if s.status == "pending")
+    done = sum(1 for s in steps if s.status == "completed")
+    lines = [
+        "<system-reminder>",
+        f"PLAN ACTIVE - {len(steps)} steps total ({done} completed, {pending} pending):",
+    ]
+    for s in steps:
+        icon = _PLAN_STEP_ICONS.get(s.status, "\u25cb")
+        lines.append(f"{icon} {s.index}. {s.description}")
+    lines.append(
+        "Execute steps in order. For each: optionally call create_task_list to break "
+        "the step into subtasks, do the work, then call update_plan_step(index, "
+        "'completed') to mark progress. Do NOT skip steps silently."
+    )
+    if getattr(session, "_pending_plan_warning", False):
+        lines.append(
+            "WARNING: the previous turn ended with steps still pending. Continue "
+            "execution or mark unfinished steps as 'skipped' explicitly."
+        )
+    lines.append("</system-reminder>")
+    return "\n".join(lines)
 
 
 async def _fire_plugin_hook(event_name: str, data: dict) -> dict:
@@ -103,6 +142,48 @@ class AgentRunResult:
     stalled: bool = False
 
 
+@dataclass
+class PromptInput:
+    """Input for runner.prompt — single entry point for native agent execution.
+
+    `agent_name` selects an entry from aru.agents.catalog.AGENTS. Custom
+    agents (defined via .agents/agents/*.md) do not flow through prompt() —
+    they continue using create_custom_agent_instance + run_agent_capture.
+    """
+    session: object  # Session — typed as object to avoid circular import
+    message: str
+    agent_name: str = "build"
+    model_ref: str | None = None
+    extra_instructions: str = ""
+    lightweight: bool = False
+    images: list | None = None
+
+
+async def prompt(input: PromptInput) -> AgentRunResult:
+    """Single entry point for native agent execution.
+
+    Builds the agent from the catalog spec, then delegates to run_agent_capture.
+    Equivalent to OpenCode's SessionPrompt.prompt() and Claude Code's queryLoop.
+    """
+    from aru.agent_factory import create_agent_from_spec
+    from aru.agents.catalog import AGENTS
+
+    if input.agent_name not in AGENTS:
+        raise KeyError(f"Unknown native agent: {input.agent_name!r}. "
+                       f"Known: {sorted(AGENTS.keys())}")
+
+    agent = create_agent_from_spec(
+        AGENTS[input.agent_name],
+        session=input.session,
+        model_ref=input.model_ref,
+        extra_instructions=input.extra_instructions,
+    )
+    return await run_agent_capture(
+        agent, input.message, session=input.session,
+        lightweight=input.lightweight, images=input.images,
+    )
+
+
 async def run_agent_capture(agent, message: str, session=None, lightweight: bool = False,
                            images: list | None = None) -> AgentRunResult:
     """Run agent with async streaming display and parallel tool execution.
@@ -133,6 +214,19 @@ async def run_agent_capture(agent, message: str, session=None, lightweight: bool
     collected_tool_calls: list[str] = []
     _stalled = False
 
+    # Snapshot the parent's live/display BEFORE the try block so the except
+    # clauses can always restore them — a nested run_agent_capture (e.g. the
+    # build agent calling enter_plan_mode) must not clobber the outer Live
+    # handle, otherwise downstream permission prompts hang.
+    try:
+        from aru.runtime import get_ctx as _get_ctx_outer
+        _outer_ctx = _get_ctx_outer()
+        _parent_live = getattr(_outer_ctx, "live", None)
+        _parent_display = getattr(_outer_ctx, "display", None)
+    except (LookupError, AttributeError):
+        _parent_live = None
+        _parent_display = None
+
     # Structured capture: the stream loop appends to these in event order.
     # On stream completion we persist them to session.history as blocks.
     # `assistant_blocks` holds interleaved text + tool_use blocks for the
@@ -160,12 +254,13 @@ async def run_agent_capture(agent, message: str, session=None, lightweight: bool
 
         # Build message — environment context (tree/git/cwd) is now in the
         # system prompt (agent instructions) so it's cacheable across turns.
-        # Only plan progress and budget warnings are added here.
+        # Plan reminder + budget warnings are prepended here.
         msg_parts = []
 
         if session and not lightweight:
-            if session.current_plan:
-                msg_parts.append(f"## Active Plan\nTask: {session.plan_task}\n\n{session.render_plan_progress()}")
+            reminder = _build_plan_reminder(session)
+            if reminder:
+                msg_parts.append(reminder)
 
             warning = session.check_budget_warning()
             if warning:
@@ -173,9 +268,13 @@ async def run_agent_capture(agent, message: str, session=None, lightweight: bool
 
         if msg_parts:
             prefix = "\n\n".join(msg_parts)
-            run_message = f"{prefix}\n\n---\n\n{message}"
+            run_message = f"{prefix}\n\n{message}"
         else:
             run_message = message
+
+        # Clear stale pending-plan warning — once we surface it, it's consumed.
+        if session is not None and getattr(session, "_pending_plan_warning", False):
+            session._pending_plan_warning = False
 
         # Hook: chat.message — let plugins intercept/modify user message
         run_message = await _fire_chat_message_hook(run_message, session)
@@ -352,8 +451,9 @@ async def run_agent_capture(agent, message: str, session=None, lightweight: bool
             # render doesn't duplicate text that we print explicitly below.
             display.content = None
 
-        ctx.live = None
-        ctx.display = None
+        # Restore the parent's live/display (or None if this was the outermost call).
+        ctx.live = _parent_live
+        ctx.display = _parent_display
 
         # Flush any trailing text into a final text block, then persist the
         # assistant turn + tool_result messages to session.history as
@@ -415,292 +515,24 @@ async def run_agent_capture(agent, message: str, session=None, lightweight: bool
 
     except (KeyboardInterrupt, asyncio.CancelledError):
         ctx = get_ctx()
-        ctx.live = None
-        ctx.display = None
+        ctx.live = _parent_live
+        ctx.display = _parent_display
         console.print("\n[yellow]Interrupted.[/yellow]")
     except Exception as e:
         ctx = get_ctx()
-        ctx.live = None
-        ctx.display = None
+        ctx.live = _parent_live
+        ctx.display = _parent_display
         from rich.markup import escape
         console.print(f"[red]Error: {escape(str(e))}[/red]")
 
+    # Final guard: if a plan is active and the agent ended its turn with
+    # pending steps (without stalling), mark the session so the next turn's
+    # reminder includes a warning. The model can then decide to continue or
+    # mark unfinished steps as 'skipped' explicitly.
+    if session is not None and not lightweight and not _stalled:
+        steps = getattr(session, "plan_steps", None)
+        if steps and any(s.status == "pending" for s in steps):
+            session._pending_plan_warning = True
+
     console.print()
     return AgentRunResult(content=final_content, tool_calls=collected_tool_calls, stalled=_stalled)
-
-
-def _extract_plan_file_paths(plan_text: str) -> list[str]:
-    """Extract file paths mentioned in plan steps (e.g., 'in `aru/cli.py`')."""
-    matches = re.findall(r"`([^`]+\.\w{1,5})`", plan_text or "")
-    seen = set()
-    paths = []
-    for m in matches:
-        norm = os.path.normpath(m)
-        if norm not in seen and os.path.isfile(norm):
-            seen.add(norm)
-            paths.append(norm)
-    return paths
-
-
-def _build_file_context(file_paths: list[str], max_total: int = 20_000) -> str:
-    """Read files and build a context string, respecting a total char budget."""
-    if not file_paths:
-        return ""
-    parts = []
-    total = 0
-    for path in file_paths:
-        try:
-            content = open(path, "r", encoding="utf-8").read()
-            if total + len(content) > max_total:
-                continue
-            total += len(content)
-            parts.append(f"### `{path}`\n```\n{content}\n```")
-        except Exception:
-            continue
-    if not parts:
-        return ""
-    return "## Pre-loaded file contents (do NOT re-read these files)\n\n" + "\n\n".join(parts)
-
-
-_MODIFY_VERBS = frozenset({
-    "add", "create", "write", "edit", "modify", "update", "implement",
-    "fix", "replace", "rename", "move", "refactor", "remove", "delete",
-})
-_MUTATION_LABELS = frozenset({"Write", "Edit", "Bash"})
-
-
-def _step_expected_mutation(description: str) -> bool:
-    """Check if step description implies file modifications."""
-    first_word = description.strip().split()[0].lower().rstrip(":")
-    return first_word in _MODIFY_VERBS
-
-
-def _has_mutation_tool(tool_calls: list[str]) -> bool:
-    """Check if any tool call is a write/edit/bash operation."""
-    return any(tc.split("(")[0] in _MUTATION_LABELS for tc in tool_calls)
-
-
-async def execute_plan_steps(session, executor_factory) -> str | None:
-    """Execute plan steps one by one with live progress tracking."""
-    plan_files = _extract_plan_file_paths(session.current_plan)
-    file_context = _build_file_context(plan_files)
-
-    if not session.plan_steps:
-        executor = executor_factory()
-        exec_prompt = (
-            f"Execute the following plan step by step.\n\n"
-            f"## Task\n{session.plan_task}\n\n"
-            f"## Plan\n{session.current_plan}"
-        )
-        run_result = await run_agent_capture(executor, exec_prompt, session, lightweight=True)
-        content = run_result.content or ""
-        if run_result.tool_calls:
-            tools_section = "\n".join(f"  - {t}" for t in run_result.tool_calls)
-            content = f"{content}\n\n[Tools]\n{tools_section}" if content else tools_section
-        return content or None
-
-    all_results = []
-    completed_context = ""
-
-    for step in session.plan_steps:
-        console.print()
-        console.print(Panel(
-            Text.from_markup(session.render_plan_progress()),
-            title="[bold]Plan Progress[/bold]",
-            border_style="blue",
-            padding=(0, 1),
-        ))
-        console.print()
-
-        step.status = "in_progress"
-        console.print(f"[bold yellow]>>> Step {step.index}:[/bold yellow] {step.description}")
-
-        compact_progress = session.render_compact_progress(step.index)
-        step_prompt_parts = [
-            f"## Task: {session.plan_task}\n",
-            f"## Current Step ({step.index}/{len(session.plan_steps)})\n{step.description}\n",
-            f"## Progress\n{compact_progress}\n",
-            "IMPORTANT: Just execute this step. Do NOT repeat completed steps or summarize.",
-        ]
-        if file_context:
-            step_prompt_parts.insert(1, file_context)
-        step_prompt = "\n".join(step_prompt_parts)
-
-        from aru.tools.tasklist import reset_task_store
-        reset_task_store()
-
-        executor = executor_factory()
-        try:
-            run_result = await run_agent_capture(executor, step_prompt, session, lightweight=True)
-            content = run_result.content
-
-            if run_result.stalled:
-                from aru.tools.tasklist import get_task_store
-                store = get_task_store()
-                all_tasks = store.get_all()
-                done = [t for t in all_tasks if t["status"] == "completed"]
-                pending = [t for t in all_tasks if t["status"] not in ("completed", "failed")]
-
-                console.print(f"\n[yellow]Step {step.index} stalled (tool call limit reached).[/yellow]")
-                if done:
-                    console.print(f"  [green]Completed:[/green] {len(done)}/{len(all_tasks)} subtasks")
-                if pending:
-                    console.print(f"  [yellow]Pending:[/yellow]")
-                    for t in pending:
-                        console.print(f"    - {t.get('description', t.get('id', '?'))}")
-
-                if get_skip_permissions():
-                    step.status = "failed"
-                    continue
-
-                console.print("\n[bold]Options:[/bold]")
-                console.print("  [cyan](r)[/cyan] Retry step with additional instructions")
-                console.print("  [cyan](s)[/cyan] Skip to next step")
-                console.print("  [cyan](a)[/cyan] Abort plan execution")
-                try:
-                    choice = console.input("[bold yellow]Choice (r/s/a):[/bold yellow] ").strip().lower()
-                except (EOFError, KeyboardInterrupt):
-                    choice = "a"
-
-                if choice in ("r", "retry"):
-                    try:
-                        extra = console.input("[bold cyan]Additional instructions:[/bold cyan] ").strip()
-                    except (EOFError, KeyboardInterrupt):
-                        extra = ""
-                    if extra:
-                        step.status = "in_progress"
-                        reset_task_store()
-                        retry_prompt = step_prompt + f"\n\n## Additional Instructions\n{extra}"
-                        executor = executor_factory()
-                        run_result = await run_agent_capture(executor, retry_prompt, session, lightweight=True)
-                        content = run_result.content
-                    else:
-                        step.status = "failed"
-                        continue
-                elif choice in ("s", "skip"):
-                    step.status = "failed"
-                    continue
-                else:
-                    step.status = "failed"
-                    break
-
-            from aru.tools.tasklist import get_task_store
-            store = get_task_store()
-            all_tasks = store.get_all()
-            tasks_completed = sum(1 for t in all_tasks if t["status"] == "completed")
-            tasks_failed = sum(1 for t in all_tasks if t["status"] == "failed")
-            tasks_total = len(all_tasks)
-            tasks_all_done = tasks_total > 0 and (tasks_completed + tasks_failed == tasks_total)
-
-            step_failed = False
-            if tasks_all_done:
-                if tasks_failed > 0 and tasks_completed == 0:
-                    step_failed = True
-            elif content:
-                step_failed = (
-                    content.startswith("Error")
-                    or "Error from OpenAI API" in content
-                    or "Error in Agent run" in content
-                )
-
-            if step_failed:
-                # Auto-retry once with error context before asking the user
-                fail_msg = content[:200] if content else f"{tasks_failed}/{tasks_total} subtasks failed"
-                console.print(f"\n[yellow]Step {step.index} failed, retrying automatically...[/yellow]")
-                reset_task_store()
-                retry_prompt = (
-                    step_prompt
-                    + f"\n\n## Previous Attempt Failed\nError: {fail_msg}\n"
-                    + "Fix the issues from the previous attempt. Do NOT repeat the same mistake."
-                )
-                executor = executor_factory()
-                retry_result = await run_agent_capture(executor, retry_prompt, session, lightweight=True)
-                content = retry_result.content
-                run_result = retry_result
-
-                # Re-evaluate after retry
-                store = get_task_store()
-                all_tasks = store.get_all()
-                tasks_completed = sum(1 for t in all_tasks if t["status"] == "completed")
-                tasks_failed = sum(1 for t in all_tasks if t["status"] == "failed")
-                tasks_total = len(all_tasks)
-                tasks_all_done = tasks_total > 0 and (tasks_completed + tasks_failed == tasks_total)
-
-                still_failed = False
-                if tasks_all_done and tasks_failed > 0 and tasks_completed == 0:
-                    still_failed = True
-                elif content:
-                    still_failed = (
-                        content.startswith("Error")
-                        or "Error from OpenAI API" in content
-                        or "Error in Agent run" in content
-                    )
-
-                if still_failed:
-                    step.status = "failed"
-                    fail_msg = content[:200] if content else f"{tasks_failed}/{tasks_total} subtasks failed"
-                    console.print(f"\n[red]Step {step.index} failed after retry: {fail_msg}[/red]")
-                    if not get_skip_permissions() and not ask_yes_no("Continue with remaining steps?"):
-                        break
-                else:
-                    # Retry succeeded — fall through to success handling
-                    step_failed = False
-
-            # Mutation validation warning (non-blocking)
-            if not step_failed and not run_result.stalled:
-                if _step_expected_mutation(step.description) and not _has_mutation_tool(run_result.tool_calls):
-                    console.print(
-                        f"[yellow]\u26a0 Step {step.index} was expected to modify files "
-                        f"but no write tools were called.[/yellow]"
-                    )
-
-            if not step_failed and (content or tasks_all_done):
-                step.status = "completed"
-                summary = content or f"All {tasks_completed} subtasks completed."
-                step_text = f"### Step {step.index}: {step.description}\n{summary}"
-                if run_result.tool_calls:
-                    tools_str = ", ".join(run_result.tool_calls)
-                    step_text += f"\nTools: {tools_str}"
-                all_results.append(step_text)
-                completed_context += f"\n- Step {step.index} ({step.description}): Done"
-            else:
-                step.status = "completed"
-                completed_context += f"\n- Step {step.index} ({step.description}): Done (no output)"
-        except (KeyboardInterrupt, asyncio.CancelledError):
-            step.status = "failed"
-            console.print(f"\n[yellow]Step {step.index} interrupted.[/yellow]")
-            if not get_skip_permissions() and not ask_yes_no("Continue with remaining steps?"):
-                break
-        except Exception as e:
-            # Auto-retry once on exception
-            console.print(f"\n[yellow]Step {step.index} error: {e}. Retrying...[/yellow]")
-            try:
-                reset_task_store()
-                retry_prompt = (
-                    step_prompt
-                    + f"\n\n## Previous Attempt Error\n{e}\n"
-                    + "Fix the issues and complete this step."
-                )
-                executor = executor_factory()
-                retry_result = await run_agent_capture(executor, retry_prompt, session, lightweight=True)
-                if retry_result.content and not retry_result.content.startswith("Error"):
-                    step.status = "completed"
-                    all_results.append(f"### Step {step.index}: {step.description}\n{retry_result.content}")
-                    completed_context += f"\n- Step {step.index} ({step.description}): Done (after retry)"
-                    continue
-            except Exception:
-                pass
-            step.status = "failed"
-            console.print(f"\n[red]Step {step.index} failed after retry: {e}[/red]")
-            if not get_skip_permissions() and not ask_yes_no("Continue with remaining steps?"):
-                break
-
-    console.print()
-    console.print(Panel(
-        Text.from_markup(session.render_plan_progress()),
-        title="[bold]Plan Complete[/bold]",
-        border_style="green" if all(s.status == "completed" for s in session.plan_steps) else "yellow",
-        padding=(0, 1),
-    ))
-
-    return "\n\n".join(all_results) if all_results else None

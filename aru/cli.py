@@ -71,10 +71,7 @@ from aru.commands import (  # noqa: F401
 from aru.runner import (  # noqa: F401
     AgentRunResult,
     _MUTATION_TOOLS,
-    _build_file_context,
-    _extract_plan_file_paths,
     build_env_context,
-    execute_plan_steps,
     run_agent_capture,
 )
 
@@ -93,7 +90,7 @@ _logging.getLogger("agno").setLevel(_logging.WARNING)
 
 # ── Imports used only in this module ───────────────────────────────────
 
-from aru.agents.planner import create_planner, review_plan
+from aru.agents.planner import review_plan
 from aru.config import load_config, render_command_template, render_skill_template
 from aru.permissions import get_skip_permissions
 from aru.providers import (
@@ -209,8 +206,6 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
     ctx.checkpoint_manager = CheckpointManager(session.session_id)
     _turn_counter = 0
 
-    planner = None
-    executor = None
     paste_state = PasteState()
     prompt_session = _create_prompt_session(paste_state, config)
 
@@ -466,8 +461,6 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
                             MODEL_ALIASES.get(resolved_ref, resolved_ref)
                         )
                         _sync_model(session)
-                        planner = None
-                        executor = None
                         console.print(f"[bold green]Switched to {session.model_display}[/bold green] ({session.model_id})")
                 except Exception as e:
                     console.print(f"[yellow]Error: {e}[/yellow]")
@@ -566,12 +559,15 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
                 continue
 
             console.print("[bold magenta]Planning...[/bold magenta]")
-            if planner is None:
-                planner = create_planner(session.model_ref, extra_instructions)
 
-            prompt = task
-
-            plan_result = await run_agent_capture(planner, prompt, session, lightweight=True)
+            from aru.runner import PromptInput, prompt as runner_prompt
+            plan_result = await runner_prompt(PromptInput(
+                session=session,
+                message=task,
+                agent_name="plan",
+                extra_instructions=extra_instructions,
+                lightweight=True,
+            ))
             plan_content = plan_result.content
 
             if plan_content and config and config.plan_reviewer:
@@ -587,22 +583,12 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
                 session.add_message("assistant", f"[Plan]\n{plan_content}")
 
                 if session.plan_steps:
-                    console.print(f"\n[bold]{len(session.plan_steps)} steps detected.[/bold]")
-
-                if get_skip_permissions() or ask_yes_no("Execute this plan?"):
-                    console.print("[bold green]Executing plan...[/bold green]")
-
-                    from aru.agents.executor import create_executor
-                    light_instructions = config.get_extra_instructions(lightweight=True) if config else ""
-
-                    def make_executor():
-                        return create_executor(session.model_ref, light_instructions)
-
-                    result = await execute_plan_steps(session, make_executor)
-                    if result:
-                        session.add_message("assistant", f"[Execution]\n{result}")
-
-                session.clear_plan()
+                    console.print(
+                        f"\n[bold]{len(session.plan_steps)} steps stored.[/bold] "
+                        f"[dim]Send a message (e.g. \"go\") to start execution; the agent "
+                        f"will see a PLAN ACTIVE reminder and call update_plan_step "
+                        f"as it progresses.[/dim]"
+                    )
 
         elif user_input.startswith("/") and not user_input.startswith("//"):
             parts = user_input[1:].split(None, 1)

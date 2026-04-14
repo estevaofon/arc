@@ -1,4 +1,4 @@
-"""Agent creation: general-purpose and custom agent instantiation."""
+"""Agent creation: catalog-driven factory plus custom agent instantiation."""
 
 from __future__ import annotations
 
@@ -6,12 +6,39 @@ import functools
 import inspect
 import logging
 
+from agno.compression.manager import CompressionManager
+from agno.utils.log import log_warning
+
 from aru.agents.base import build_instructions as _build_instructions
+from aru.agents.catalog import AGENTS, AgentSpec
 from aru.config import AgentConfig, CustomAgent
 from aru.providers import create_model
 from aru.session import Session
 
 logger = logging.getLogger("aru.agent_factory")
+
+# Max chars for truncation fallback when compression fails
+_TRUNCATE_FALLBACK = 3000
+
+
+class _SafeCompressionManager(CompressionManager):
+    """CompressionManager that truncates on failure instead of leaving messages uncompressed.
+
+    Agno's default behavior: if compression returns None, the message stays with
+    compressed_content=None → should_compress() fires again → infinite retry loop.
+    This subclass marks failed messages with a truncated version so the loop moves on.
+    """
+
+    async def acompress(self, messages, run_metrics=None):
+        before = {id(m) for m in messages if m.role == "tool" and m.compressed_content is None}
+        await super().acompress(messages, run_metrics=run_metrics)
+        for msg in messages:
+            if id(msg) in before and msg.compressed_content is None:
+                content_str = str(msg.content or "")
+                msg.compressed_content = content_str[:_TRUNCATE_FALLBACK] + (
+                    "... [truncated, compression failed]" if len(content_str) > _TRUNCATE_FALLBACK else ""
+                )
+                log_warning(f"Compression fallback (truncate) for {msg.tool_name}")
 
 
 def _wrap_tools_with_hooks(tools: list) -> list:
@@ -148,41 +175,74 @@ def _apply_chat_hooks(instructions: str, model_ref: str, agent_name: str,
     return instructions, model_ref, max_tokens
 
 
+def _make_compression_manager() -> _SafeCompressionManager:
+    """Construct the safe compression manager used for every native agent."""
+    from aru.runtime import get_ctx
+    return _SafeCompressionManager(
+        model=create_model(get_ctx().small_model_ref, max_tokens=2048),
+        compress_tool_results=True,
+        compress_tool_results_limit=25,
+    )
+
+
+def create_agent_from_spec(
+    spec: AgentSpec,
+    session: Session | None = None,
+    model_ref: str | None = None,
+    extra_instructions: str = "",
+):
+    """Build an Agno Agent from a catalog spec.
+
+    Single construction path for all native agents (build/plan/executor/explorer).
+    Resolves model, wraps tools with plugin hooks, applies chat.system.transform
+    and chat.params hooks, and attaches the safe compression manager.
+
+    `session` may be None for subagent specs that always use the small model.
+    """
+    from agno.agent import Agent
+    from aru.runtime import get_ctx
+
+    if spec.small_model:
+        resolved_model = model_ref or get_ctx().small_model_ref
+    else:
+        if session is None:
+            raise ValueError(f"AgentSpec {spec.name!r} requires a session to resolve the model")
+        resolved_model = model_ref or session.model_ref
+
+    tools = _wrap_tools_with_hooks(spec.tools_factory())
+    instructions = _build_instructions(spec.role, extra_instructions)
+
+    instructions, resolved_model, max_tokens = _apply_chat_hooks(
+        instructions, resolved_model, spec.name, max_tokens=spec.max_tokens,
+    )
+
+    return Agent(
+        name=spec.name,
+        model=create_model(resolved_model, max_tokens=max_tokens),
+        tools=tools,
+        instructions=instructions,
+        markdown=True,
+        compress_tool_results=True,
+        compression_manager=_make_compression_manager(),
+        tool_call_limit=None,
+    )
+
+
 def create_general_agent(
     session: Session,
     config: AgentConfig | None = None,
     model_override: str | None = None,
     env_context: str = "",
 ):
-    """Create the general-purpose agent.
-
-    Args:
-        env_context: Environment context (cwd, tree, git status) to include
-            in the system prompt. Placed in instructions so it's cacheable.
-    """
-    from agno.agent import Agent
-
-    from aru.tools.codebase import GENERAL_TOOLS
-    tools = _wrap_tools_with_hooks(GENERAL_TOOLS)
-
+    """Create the general-purpose agent (thin wrapper around the catalog factory)."""
     extra = config.get_extra_instructions() if config else ""
     if env_context:
         extra = f"{extra}\n\n{env_context}" if extra else env_context
-    model_ref = model_override or session.model_ref
-    instructions = _build_instructions("general", extra)
-
-    # Apply chat hooks (system.transform + params)
-    instructions, model_ref, max_tokens = _apply_chat_hooks(
-        instructions, model_ref, "Aru", max_tokens=8192,
-    )
-
-    return Agent(
-        name="Aru",
-        model=create_model(model_ref, max_tokens=max_tokens),
-        tools=tools,
-        instructions=instructions,
-        markdown=True,
-        tool_call_limit=None,
+    return create_agent_from_spec(
+        AGENTS["build"],
+        session,
+        model_ref=model_override or session.model_ref,
+        extra_instructions=extra,
     )
 
 

@@ -8,11 +8,12 @@ An intelligent coding assistant for the terminal, powered by LLMs and [Agno](htt
 
 ## Highlights
 
-- **Multi-Agent Architecture** — Specialized agents for planning, execution, exploration, and conversation
+- **Catalog-Driven Multi-Agent Architecture** — `build`, `plan`, `executor`, and `explorer` (subagent) specs resolved from a single source of truth (`aru/agents/catalog.py`)
+- **Autonomous Plan Mode** — Agents self-trigger planning via `enter_plan_mode(task)`; plan steps are persisted in the session and surfaced each turn as a `PLAN ACTIVE` reminder
+- **Structured Subtask Tracking** — `create_task_list` / `update_task` / `update_plan_step` force the executor to plan, execute, and mark subtasks as it goes
 - **Interactive CLI** — Streaming responses, multi-line paste, session management
 - **Image Support** — Attach images via `@` mentions for multimodal analysis (Claude, GPT-4o, Gemini)
-- **11 Integrated Tools** — File operations, code search, shell, web search, task delegation
-- **Task Planning** — Break down complex tasks into steps with automatic execution
+- **17 Integrated Tools** — File I/O (single + batched), code search, shell, web, delegation, plan/task tracking
 - **Multi-Provider** — Anthropic, OpenAI, Ollama, Groq, OpenRouter, DeepSeek, and others via custom configuration
 - **Custom Commands, Skills, and Agents** — Extend aru via the `.agents/` directory
 - **Custom Tools** — Add your own Python tools with a simple `@tool` decorator
@@ -575,33 +576,53 @@ Aru can load tools from MCP servers. Configure in `.aru/mcp_config.json`:
 
 ## Agents
 
-| Agent | Role | Tools |
-|-------|------|-------|
-| **Planner** | Analyzes codebase, creates structured implementation plans | Read-only tools, search, web |
-| **Executor** | Implements code changes based on plans or instructions | All tools including delegation |
-| **General** | Handles conversation and simple operations | All tools including delegation |
-| **Explorer** | Fast, read-only codebase exploration and search | Read-only tools, search, bash (read-only) |
+Built-in agents are declared as specs in `aru/agents/catalog.py` and instantiated on demand by `agent_factory.create_agent_from_spec`. A single construction path resolves the model, tool list, prompt role, and plugin hooks for all native agents.
+
+| Agent | Mode | Role | Tools |
+|-------|------|------|-------|
+| **`build`** (General) | primary | Conversational coding assistant. Self-triggers `enter_plan_mode` for 3+ file changes | Full tool set including `delegate_task` |
+| **`plan`** (Planner) | primary | Read-only analysis → `## Summary` + `## Steps` markdown plan | Read/search only (`read_file`, `read_files`, `glob_search`, `grep_search`, `list_directory`) |
+| **`executor`** | primary | Step-by-step execution of a stored plan with mandatory task list tracking | Full tool set |
+| **`explorer`** | **subagent** | Fast, read-only codebase research. Invoked only via `delegate_task(task, agent_name="explorer")` | Read/search + read-only `bash` + `rank_files` |
+
+> **Scope reviewer:** `aru/agents/planner.py` also exposes `review_plan(request, plan)`, a one-shot, no-tool reviewer that runs on the small model to trim scope creep from generated plans. Enabled via `plan_reviewer: true` in `aru.json`.
+
+### Plan mode flow
+
+The `plan` agent runs in two ways:
+
+1. **Manual:** the user types `/plan <task>` — the planner produces a plan, the reviewer optionally trims it, and the result is stored in the session.
+2. **Autonomous:** the `build` agent calls `enter_plan_mode(task)` when it detects a multi-file task. This invokes the planner, stores the plan, and returns a summary.
+
+Once a plan is stored, every following turn prepends a `<system-reminder>` listing all plan steps with their status icons. The build/executor agent works through them in order, calling `update_plan_step(index, "completed")` after each. Within a step, it calls `create_task_list([...])` to break the step into 1–10 concrete subtasks, then `update_task(i, "completed")` as they finish.
 
 ## Tools
 
 ### File Operations
 - `read_file` — Reads files with line range support and binary detection
-- `read_files` — Reads multiple files in parallel (single batched call)
+- `read_files` — Reads multiple files in parallel (batched)
 - `write_file` — Writes content to files, creating directories as needed
+- `write_files` — Writes multiple files in one call
 - `edit_file` — Find-and-replace edits on files
+- `edit_files` — Batched find-and-replace across multiple files
 
 ### Search & Discovery
 - `glob_search` — Find files by pattern (respects .gitignore)
 - `grep_search` — Content search with regex and file filtering
 - `list_directory` — Directory listing with gitignore filtering
+- `rank_files` — Multi-factor file relevance ranking (explorer subagent only)
 
 ### Shell & Web
 - `bash` — Executes shell commands with permission gates
 - `web_search` — Web search via DuckDuckGo
 - `web_fetch` — Fetches URLs and converts HTML to readable text
 
-### Advanced
-- `delegate_task` — Spawns autonomous sub-agents for parallel task execution
+### Planning & Delegation
+- `enter_plan_mode` — Generate a structured plan via the planner agent and store it in the session
+- `update_plan_step` — Mark a macro plan step as `in_progress` / `completed` / `failed` / `skipped`
+- `create_task_list` — Declare 1–10 subtasks for the current step (mandatory first executor call)
+- `update_task` — Mark a subtask as `in_progress` / `completed` / `failed`
+- `delegate_task` — Spawn an autonomous subagent (defaults to `explorer`) for parallel research or execution
 
 ## Architecture
 
@@ -609,22 +630,25 @@ Aru can load tools from MCP servers. Configure in `.aru/mcp_config.json`:
 aru-code/
 ├── aru/
 │   ├── cli.py              # Main REPL loop, argument parsing, and entry point
-│   ├── agent_factory.py    # Agent instantiation (general and custom agents)
+│   ├── agent_factory.py    # Single factory — builds Agno Agents from catalog specs
 │   ├── commands.py         # Slash commands, help display, shell execution
 │   ├── completers.py       # Input completions, paste detection, @file mentions
 │   ├── context.py          # Token optimization (pruning, truncation, compaction)
 │   ├── display.py          # Terminal display (logo, status bar, streaming output)
-│   ├── runner.py           # Agent execution orchestration with streaming
-│   ├── session.py          # Session state, persistence, plan tracking
+│   ├── runner.py           # Agent execution, streaming, PLAN ACTIVE reminder injection
+│   ├── session.py          # Session state, persistence, plan steps tracking
+│   ├── runtime.py          # Request context (TaskStore, session, display handles)
 │   ├── config.py           # Configuration loader (AGENTS.md, .agents/)
 │   ├── providers.py        # Multi-provider LLM abstraction
 │   ├── permissions.py      # Granular permission system (allow/ask/deny)
 │   ├── agents/
-│   │   ├── planner.py      # Planning agent
-│   │   ├── executor.py     # Execution agent
-│   │   └── explorer.py     # Explorer agent (fast, read-only codebase search)
+│   │   ├── base.py         # Shared prompt templates + build_instructions(role)
+│   │   ├── catalog.py      # AgentSpec registry — build / plan / executor / explorer
+│   │   └── planner.py      # review_plan() — small-model scope reviewer
 │   └── tools/
-│       ├── codebase.py     # 11 core tools
+│       ├── codebase.py     # Core tool implementations + GENERAL/EXECUTOR/PLANNER/EXPLORER sets
+│       ├── plan_mode.py    # enter_plan_mode tool (agent-invokable planner entry)
+│       ├── tasklist.py     # create_task_list / update_task / update_plan_step
 │       ├── ast_tools.py    # Tree-sitter code analysis
 │       ├── ranker.py       # File relevance ranking
 │       ├── mcp_client.py   # MCP client
