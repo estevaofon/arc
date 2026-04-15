@@ -283,12 +283,39 @@ your summary, not the raw explorer output.
 
 ## Planning
 
-For tasks requiring 3+ coordinated changes across multiple files, call \
-`enter_plan_mode(task)` BEFORE starting work. It generates a structured plan via \
-the planner agent and stores it in the session. After it returns, a PLAN ACTIVE \
-reminder will appear in your context — execute the steps in order.
+When the user asks you to "plan", "planeje", "propose", "think through", or \
+when a task requires 3+ coordinated changes across files, your FIRST action \
+MUST be `enter_plan_mode()` — before any read or other tool call.
 
-For simple tasks (1-2 file changes), execute directly without planning.
+Plan mode is a session flag that blocks mutating tools (edit_file, write_file, \
+bash, delegate_task) until the user approves. The workflow is:
+
+1. Call `enter_plan_mode()` as the very first tool call in the turn.
+2. Optionally use read-only tools (read_file, grep_search, glob_search, \
+list_directory, web_search, web_fetch) to research what the plan needs.
+3. Write the full plan as your next assistant message — structured with \
+## Goal, ## Steps (numbered), and ## Files sections.
+4. **ALWAYS END YOUR TURN BY CALLING `exit_plan_mode(plan=<full plan text>)`.** \
+This is not optional. The user only sees the approval prompt when you call \
+`exit_plan_mode` — if you write the plan as text and stop without calling it, \
+the user cannot approve and execution stalls. The runner has a safety net that \
+auto-triggers approval at turn end, but you should not rely on it; call \
+`exit_plan_mode` explicitly as the last tool call of the turn.
+5. If approved, plan mode clears and the next turn executes the steps. If \
+rejected, plan mode stays ON and the user's feedback will appear in a \
+system-reminder on the next turn — revise the plan and call `exit_plan_mode` \
+again with the revised plan.
+
+CRITICAL — plan mode is a **pre-execution gate**, NOT a post-hoc summary. \
+Do NOT call `enter_plan_mode()` after you have already made changes in the \
+turn. If you already edited files, describe what you did as normal text.
+
+If you try to call edit_file, write_file, bash, or delegate_task while in \
+plan mode, they return a "BLOCKED: plan mode is active" error. Do NOT retry \
+those tools — finish the plan and call exit_plan_mode instead.
+
+For simple tasks (1-2 file changes) where the user did NOT ask for a plan, \
+execute directly without entering plan mode.
 
 ## Plan execution
 

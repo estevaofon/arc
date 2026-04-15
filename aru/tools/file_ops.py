@@ -12,7 +12,20 @@ import os
 from rich.console import Group
 from rich.text import Text
 
-from aru.permissions import check_permission
+from aru.permissions import check_permission, consume_rejection_feedback
+
+
+def _denied(action: str) -> str:
+    feedback = consume_rejection_feedback()
+    if feedback:
+        return (
+            f"PERMISSION DENIED by user: {action}. The user said: {feedback}\n"
+            f"Follow the user's instructions instead of retrying."
+        )
+    return (
+        f"PERMISSION DENIED by user: {action}. Do NOT retry this operation. "
+        f"Stop and ask the user for new instructions."
+    )
 from aru.runtime import get_ctx
 from aru.tools.gitignore import is_ignored, walk_filtered
 from aru.tools._diff import _compact_diff, _format_unified_diff
@@ -160,7 +173,7 @@ def write_file(file_path: str, content: str) -> str:
         existing = ""
     diff = _format_unified_diff(existing, content, file_path)
     if not check_permission("write", file_path, diff):
-        return f"PERMISSION DENIED by user: write to {file_path}. Do NOT retry this operation. Stop and ask the user for new instructions."
+        return _denied(f"write to {file_path}")
     try:
         _checkpoint_file(file_path)
         os.makedirs(os.path.dirname(file_path) or ".", exist_ok=True)
@@ -194,7 +207,7 @@ def write_files(file_list: list[dict]) -> str:
         parts.append(_format_unified_diff(existing, content, p))
         parts.append(Text())
     if not check_permission("write", ", ".join(e.get("path", "") for e in file_list), Group(*parts)):
-        return f"PERMISSION DENIED by user: batch write of {len(file_list)} files. Do NOT retry this operation. Stop and ask the user for new instructions."
+        return _denied(f"batch write of {len(file_list)} files")
 
     results = []
     errors = []
@@ -263,7 +276,7 @@ def edit_file(file_path: str, old_string: str, new_string: str) -> str:
 
     diff = _format_unified_diff(content, new_content, file_path)
     if not check_permission("edit", file_path, diff):
-        return f"PERMISSION DENIED by user: edit {file_path}. Do NOT retry this operation. Stop and ask the user for new instructions."
+        return _denied(f"edit {file_path}")
 
     try:
         _checkpoint_file(file_path)
@@ -327,7 +340,7 @@ def edit_files(edits: list[dict]) -> str:
     for err in preview_errors:
         parts.append(Text(err, style="red"))
     if not check_permission("edit", ", ".join(e.get("path", "") for e in edits), Group(*parts)):
-        return f"PERMISSION DENIED by user: batch edit of {len(edits)} files. Do NOT retry this operation. Stop and ask the user for new instructions."
+        return _denied(f"batch edit of {len(edits)} files")
 
     errors = list(preview_errors)
     results = [

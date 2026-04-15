@@ -35,11 +35,34 @@ def _build_plan_reminder(session) -> str | None:
     Mirrors the Claude Code TodoWrite reminder pattern: state lives in the
     session, the model sees the current snapshot every turn and updates it
     via update_plan_step. Returns None when no plan is active.
+
+    Also surfaces plan-mode status: if `session.plan_mode` is True, emits
+    a standalone reminder even when no steps are parsed yet (e.g. the agent
+    entered plan mode but hasn't written the plan). Keeps the gate visible
+    across turns so the agent can't forget it's in plan mode.
     """
     if session is None:
         return None
     steps = getattr(session, "plan_steps", None)
+    plan_mode = bool(getattr(session, "plan_mode", False))
     if not steps:
+        if plan_mode:
+            parts = [
+                "<system-reminder>",
+                "PLAN MODE ACTIVE — mutating tools (edit_file, write_file, "
+                "bash, delegate_task) are BLOCKED until the user approves "
+                "a plan. Write the plan as your next assistant message — "
+                "it will be shown to the user for approval at the end of "
+                "this turn. Do NOT retry blocked tools.",
+            ]
+            feedback = _consume_plan_rejection_feedback(session)
+            if feedback:
+                parts.append(
+                    f"The user REJECTED your previous plan with this "
+                    f"feedback: {feedback}\nRevise the plan accordingly."
+                )
+            parts.append("</system-reminder>")
+            return "\n".join(parts)
         return None
 
     # Auto-retire plans that have nothing left to execute. Leaving a fully-
@@ -52,9 +75,13 @@ def _build_plan_reminder(session) -> str | None:
 
     pending = sum(1 for s in steps if s.status == "pending")
     done = sum(1 for s in steps if s.status == "completed")
+    header = (
+        "PLAN MODE ACTIVE (mutating tools BLOCKED until exit_plan_mode approval) - "
+        if plan_mode else "PLAN ACTIVE - "
+    )
     lines = [
         "<system-reminder>",
-        f"PLAN ACTIVE - {len(steps)} steps total ({done} completed, {pending} pending):",
+        f"{header}{len(steps)} steps total ({done} completed, {pending} pending):",
     ]
     for s in steps:
         icon = _PLAN_STEP_ICONS.get(s.status, "\u25cb")
@@ -69,8 +96,46 @@ def _build_plan_reminder(session) -> str | None:
             "WARNING: the previous turn ended with steps still pending. Continue "
             "execution or mark unfinished steps as 'skipped' explicitly."
         )
+    feedback = _consume_plan_rejection_feedback(session)
+    if feedback:
+        lines.append(
+            f"The user REJECTED your previous plan with this feedback: "
+            f"{feedback}\nRevise the plan accordingly."
+        )
     lines.append("</system-reminder>")
     return "\n".join(lines)
+
+
+def _consume_plan_rejection_feedback(session) -> str | None:
+    """Read-and-clear plan rejection feedback stored on the session.
+
+    The auto plan-approval path at turn end stores the user's revision
+    feedback on `session._plan_rejection_feedback`. The plan reminder
+    consumes it on the next turn and clears it, so the agent sees the
+    critique exactly once.
+    """
+    feedback = getattr(session, "_plan_rejection_feedback", None)
+    if feedback:
+        session._plan_rejection_feedback = None
+    return feedback
+
+
+def _extract_assistant_text(assistant_blocks: list[dict]) -> str:
+    """Concatenate the text blocks from a list of structured assistant blocks.
+
+    Used by the auto plan-approval path at turn end to recover the plan
+    the agent wrote as regular text. tool_use and other non-text blocks
+    are ignored — we only care about what the model said.
+    """
+    parts: list[str] = []
+    for block in assistant_blocks:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "text":
+            text = block.get("text", "")
+            if text:
+                parts.append(text)
+    return "\n".join(parts)
 
 
 async def _fire_plugin_hook(event_name: str, data: dict) -> dict:
@@ -481,6 +546,56 @@ async def run_agent_capture(agent, message: str, session=None, lightweight: bool
                 session.add_structured_message("assistant", assistant_blocks)
             for tr_msg in tool_result_msgs:
                 session.add_structured_message(tr_msg["role"], tr_msg["content"])
+
+        # Auto-exit plan mode at turn end. If the agent called
+        # `enter_plan_mode` and then wrote the plan as assistant text but
+        # *forgot* to call `exit_plan_mode`, the flag would stay on forever
+        # and the user would never see the approval panel. Surface the
+        # approval flow automatically here using the assistant's text as
+        # the plan. If the agent DID call exit_plan_mode, plan_mode is
+        # already False and this block is a no-op.
+        if session and not lightweight and getattr(session, "plan_mode", False):
+            plan_text = _extract_assistant_text(assistant_blocks).strip()
+            if plan_text:
+                try:
+                    from aru.tools.plan_mode import _prompt_plan_approval
+                    task_label = plan_text.split("\n", 1)[0][:80]
+                    session.set_plan(task=task_label, plan_content=plan_text)
+                    approved, feedback = _prompt_plan_approval(
+                        session.plan_steps, len(session.plan_steps)
+                    )
+                    session._plan_render_pending = False
+                    if approved:
+                        session.plan_mode = False
+                        session._plan_rejection_feedback = None
+                        console.print(
+                            "[green]Plan approved. Send your next instruction "
+                            "to execute it, or say 'go' to proceed.[/green]"
+                        )
+                    else:
+                        # Keep plan_mode on so the agent revises next turn.
+                        session.clear_plan()
+                        session.plan_mode = True  # clear_plan() doesn't touch it
+                        if feedback:
+                            session._plan_rejection_feedback = feedback
+                            console.print(
+                                f"[yellow]Plan rejected. Feedback queued for "
+                                f"next turn:[/yellow] [dim]{feedback}[/dim]"
+                            )
+                        else:
+                            session._plan_rejection_feedback = (
+                                "User rejected the plan without specific feedback. "
+                                "Ask the user what they would like changed."
+                            )
+                            console.print(
+                                "[yellow]Plan rejected. Tell Aru what to "
+                                "revise.[/yellow]"
+                            )
+                except Exception:
+                    # Never let an approval-flow glitch crash the turn —
+                    # the plan text is already in history, the user can
+                    # interact normally on the next turn.
+                    pass
 
         if run_output and session and hasattr(run_output, "metrics"):
             session.track_tokens(run_output.metrics)

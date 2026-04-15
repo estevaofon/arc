@@ -1,10 +1,25 @@
-"""Plan mode control surface — agent-invokable tool to generate a structured plan.
+"""Plan-mode tools — agent-invokable entry and exit for Aru's planning flow.
 
-This is the autonomous counterpart to the `/plan` slash command. The build
-agent calls `enter_plan_mode(task)` when it detects a request requiring
-multiple coordinated changes; the tool runs the planner via runner.prompt,
-stores the plan in the session, and returns a summary so the build agent can
-immediately follow the resulting PLAN ACTIVE reminder.
+Plan mode is a **session-level flag**, not a nested agent run. Entering it
+only flips `session.plan_mode = True`; the build agent continues in the
+same loop, writes the plan as its next assistant message, and calls
+`exit_plan_mode(plan=...)` to request user approval. While the flag is on,
+`aru.agent_factory._PLAN_MODE_BLOCKED_TOOLS` blocks edit/write/bash/
+delegate_task at the tool wrapper, so the agent cannot accidentally
+execute side effects mid-plan.
+
+This design replaces an earlier implementation that invoked the planner
+agent via a nested `runner.prompt(...)` call. That created a second `Live`
+render context on top of the outer turn's Live, and collided with any
+concurrent permission prompt — producing a deadlock whenever the build
+agent dispatched `enter_plan_mode` in the same parallel tool batch as a
+`bash` or `edit_file`. The flag-flip design eliminates the nested runner
+entirely, matching how Claude Code's EnterPlanMode tool works.
+
+The `/plan <task>` slash command is separate — it still runs the planner
+agent directly from `aru/commands.py`, because that path is user-initiated
+(no outer `Live` to collide with) and benefits from the planner's
+specialized read-only tool set and instructions.
 """
 
 from __future__ import annotations
@@ -40,20 +55,29 @@ def _prompt_plan_approval(plan_steps: list, n_steps: int) -> tuple[bool, str]:
             pass
 
     ctx.console.print()
-    ctx.console.print(_render_plan_steps(plan_steps))
+    if plan_steps:
+        ctx.console.print(_render_plan_steps(plan_steps))
     ctx.console.print(Panel(
-        f"Proposed plan with [bold]{n_steps}[/bold] steps. Approve execution?",
+        f"Proposed plan with [bold]{n_steps}[/bold] step(s). Approve execution?",
         title="[bold cyan]Plan approval[/bold cyan]",
         border_style="cyan",
         expand=False,
     ))
 
+    from aru.select import select_option
+    options = [
+        "Approve and execute",
+        "Reject (revise with feedback)",
+        "Reject (no feedback)",
+    ]
+
     try:
-        answer = ctx.console.input(
-            "[bold cyan](y)es / (n)o / type feedback to revise:[/bold cyan] "
-        ).strip()
-    except (EOFError, KeyboardInterrupt):
-        answer = "n"
+        choice = select_option(
+            options,
+            title="Choose an option (↑↓ to move, Enter to confirm):",
+            default=0,
+            cancel_value=2,  # bare reject on Esc/Ctrl+C
+        )
     finally:
         if ctx.live:
             try:
@@ -62,84 +86,108 @@ def _prompt_plan_approval(plan_steps: list, n_steps: int) -> tuple[bool, str]:
             except Exception:
                 pass
 
-    low = answer.lower()
-    if not answer or low in ("y", "yes", "s", "sim", "ok"):
+    if choice == 0:
         return True, ""
-    if low in ("n", "no", "não", "nao"):
-        return False, ""
-    return False, answer
+    if choice == 1:
+        # Collect free-text feedback for the model to revise against.
+        try:
+            feedback = ctx.console.input(
+                "[bold cyan]Tell Aru what to revise:[/bold cyan] "
+            ).strip()
+        except BaseException:
+            feedback = ""
+        return False, feedback
+    return False, ""
 
 
-async def enter_plan_mode(task: str, force: bool = False) -> str:
-    """Generate a structured plan for a complex task and get user approval.
+async def enter_plan_mode() -> str:
+    """Enter plan mode — a read-only session flag that blocks mutating tools.
 
-    Use this when the user asks for work that requires 3+ coordinated changes
-    across files, or when they explicitly ask for a new plan. Generates a
-    read-only plan via the planner agent, shows it to the user, and asks for
-    explicit approval before execution proceeds.
+    Call this as your FIRST action when the user asks you to "plan",
+    "planeje", "think through", "propose", or when you're about to make
+    3+ coordinated changes across files. After calling, write a structured
+    plan as your next assistant message, then call
+    `exit_plan_mode(plan=<full plan text>)` to request user approval.
 
-    IMPORTANT: the plan is NOT automatically executed. After this tool
-    returns, one of three things happened:
-      1. User approved — tool returns the plan and you should execute it,
-         calling update_plan_step(index, "completed") as you finish each step.
-      2. User rejected — tool returns a rejection message. Stop, do NOT
-         execute, and ask the user what they want instead.
-      3. User gave free-text feedback — tool returns the feedback. Stop,
-         do NOT execute, and either replan (enter_plan_mode again with the
-         revised task) or discuss with the user.
+    While plan mode is active, these tools return a BLOCKED error and must
+    not be retried: edit_file(s), write_file(s), bash, delegate_task.
 
-    Behavior with an existing plan:
-      - If the previous plan is fully terminal (all steps done/skipped/
-        failed), it is automatically replaced.
-      - If the previous plan still has pending or in-progress steps, this
-        tool refuses UNLESS you pass force=True. Only pass force=True when
-        the user explicitly asked for a new plan. Do NOT call
-        update_plan_step to "close out" stale steps before replanning.
+    Read-only tools (read_file, glob_search, grep_search, list_directory,
+    web_search, web_fetch, rank_files) remain usable so you can research
+    before writing the plan.
 
-    Args:
-        task: One-line description of what to plan.
-        force: Pass True to replace a plan that still has unfinished steps.
+    IMPORTANT: plan mode is a PRE-EXECUTION gate. Do NOT call it after you
+    have already made changes in this turn. If you already edited files,
+    describe what you did as text; do not retroactively "plan" completed work.
+
+    Returns instructions for what to do next.
     """
     ctx = get_ctx()
     session = ctx.session
     if session is None:
         return "Error: enter_plan_mode requires an active session."
 
-    existing_steps = getattr(session, "plan_steps", None) or []
-    if existing_steps:
-        unfinished = [s for s in existing_steps if s.status not in ("completed", "skipped", "failed")]
-        if unfinished and not force:
-            pending_list = ", ".join(f"#{s.index}" for s in unfinished)
-            return (
-                f"Error: a plan is already active with {len(unfinished)} unfinished "
-                f"step(s) ({pending_list}). If the user explicitly asked for a new "
-                f"plan, retry with force=True to discard the in-progress plan. Do "
-                f"NOT call update_plan_step to close out the old steps — that only "
-                f"re-renders the stale plan. Otherwise, execute the existing plan "
-                f"(see the PLAN ACTIVE reminder)."
-            )
-        session.clear_plan()
-
-    from aru.runner import PromptInput, prompt as runner_prompt
-
-    result = await runner_prompt(PromptInput(
-        session=session,
-        message=task,
-        agent_name="plan",
-        lightweight=True,
-    ))
-    plan_content = (result.content or "").strip()
-    if not plan_content:
-        return "Error: planner returned no content. Aborting plan_mode."
-
-    session.set_plan(task, plan_content)
-    n_steps = len(session.plan_steps)
-    if n_steps == 0:
+    if session.plan_mode:
         return (
-            f"Plan generated but no steps were detected. The next turn will not "
-            f"see a PLAN ACTIVE reminder — execute manually based on this plan:\n\n"
-            f"{plan_content}"
+            "Already in plan mode. Finish writing the plan as your next "
+            "assistant message, then call exit_plan_mode(plan=<full plan text>)."
         )
+
+    # Any stale plan_steps from a previous plan should not leak into this
+    # new planning session — the agent hasn't produced the new plan yet.
+    # clear_plan() does NOT touch plan_mode, so order doesn't matter here.
+    session.clear_plan()
+    session.plan_mode = True
+
+    return (
+        "Plan mode active. Mutating tools (edit_file, write_file, bash, "
+        "delegate_task) are now blocked. Research with read-only tools if "
+        "needed, then write a structured plan as your next assistant "
+        "message in this format:\n\n"
+        "## Goal\n<one-line goal>\n\n"
+        "## Steps\n1. <action>\n2. <action>\n3. <action>\n\n"
+        "## Files\n- path/to/file1\n- path/to/file2\n\n"
+        "When the plan is ready, call exit_plan_mode(plan=<full plan text>) "
+        "to request user approval. Do NOT execute any step until approved."
+    )
+
+
+async def exit_plan_mode(plan: str) -> str:
+    """Exit plan mode and request user approval to execute the plan.
+
+    Call this AFTER writing the full plan as an assistant message. The user
+    is shown the plan and asked to approve. On approval, plan mode clears
+    and mutating tools become usable again — execute the steps in order,
+    calling update_plan_step(index, 'completed') after each. On rejection,
+    plan mode stays active so you can revise and call exit_plan_mode again
+    with the updated plan.
+
+    Args:
+        plan: The full plan text. Shown to the user in the approval panel
+            and parsed into structured steps for progress tracking.
+    """
+    ctx = get_ctx()
+    session = ctx.session
+    if session is None:
+        return "Error: exit_plan_mode requires an active session."
+    if not session.plan_mode:
+        return (
+            "Error: not in plan mode. Call enter_plan_mode() first if the "
+            "user asked for a plan. Otherwise proceed normally."
+        )
+
+    plan_text = (plan or "").strip()
+    if not plan_text:
+        return (
+            "Error: exit_plan_mode requires a non-empty plan. Write the plan "
+            "first, then call exit_plan_mode(plan=<full plan text>)."
+        )
+
+    # Parse steps for progress tracking + render. `set_plan` populates
+    # session.plan_steps from the plan text.
+    task_label = plan_text.split("\n", 1)[0][:80] if plan_text else "plan"
+    session.set_plan(task=task_label, plan_content=plan_text)
+    n_steps = len(session.plan_steps)
 
     approved, feedback = _prompt_plan_approval(session.plan_steps, n_steps)
 
@@ -147,23 +195,32 @@ async def enter_plan_mode(task: str, force: bool = False) -> str:
     # the runner's coalesced end-of-batch render to avoid a duplicate.
     session._plan_render_pending = False
 
-    if not approved:
-        session.clear_plan()
-        if feedback:
+    if approved:
+        session.plan_mode = False
+        if n_steps > 0:
             return (
-                f"User rejected the plan and gave this feedback:\n\n  {feedback}\n\n"
-                f"Do NOT execute anything. Either call enter_plan_mode again with a "
-                f"revised task that incorporates the feedback, or ask the user for "
-                f"clarification. The previous plan has been discarded."
+                f"User approved the plan ({n_steps} step(s)). Plan mode is "
+                f"now OFF — mutating tools are unlocked. Execute the steps "
+                f"in order and call update_plan_step(index, 'completed') "
+                f"after each.\n\n--- PLAN ---\n{plan_text}"
             )
         return (
-            "User rejected the plan. Do NOT execute anything. Ask the user what "
-            "they would like to change, then optionally call enter_plan_mode "
-            "again with a revised task. The previous plan has been discarded."
+            f"User approved. Plan mode is now OFF — mutating tools are "
+            f"unlocked. Execute the work described:\n\n--- PLAN ---\n{plan_text}"
         )
 
+    # Rejection keeps plan mode ON so the agent can revise without re-entering.
+    # clear_plan() wipes plan_steps but does not touch plan_mode.
+    session.clear_plan()
+    if feedback:
+        return (
+            f"User rejected the plan with this feedback:\n\n  {feedback}\n\n"
+            f"You are STILL in plan mode. Revise the plan based on the "
+            f"feedback, write the updated plan as your next message, and "
+            f"call exit_plan_mode(plan=<revised plan>) again. Do NOT execute."
+        )
     return (
-        f"User approved the plan ({n_steps} steps). Execute the steps in order "
-        f"and call update_plan_step(index, 'completed') after each.\n\n"
-        f"--- PLAN ---\n{plan_content}"
+        "User rejected the plan. You are still in plan mode. Ask the user "
+        "what they would like changed, revise the plan, and call "
+        "exit_plan_mode(plan=<revised plan>) again. Do NOT execute anything."
     )

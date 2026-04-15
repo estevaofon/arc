@@ -111,6 +111,9 @@ class RuntimeContext:
     permission_lock: threading.Lock = field(default_factory=threading.Lock)
     config_stack: list = field(default_factory=list)
     session_stack: list[set[tuple[str, str]]] = field(default_factory=list)
+    # "default" = prompt for each edit, "acceptEdits" = auto-allow edit/write
+    permission_mode: str = "default"
+    last_rejection_feedback: str = ""
 
     # -- Tasklist --
     task_store: TaskStore = field(default_factory=TaskStore)

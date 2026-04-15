@@ -29,11 +29,32 @@ async def _fire_hook(event_name: str, data: dict) -> dict:
     return data
 
 
+# Tools blocked while the session is in plan mode. Read-only tools (read,
+# glob, grep, list_directory, web_search, web_fetch, etc.) are NOT in this
+# set — the agent needs them to research and write the plan. Mutating or
+# execution-capable tools are gated: the agent must call exit_plan_mode and
+# get user approval before running any of these.
+_PLAN_MODE_BLOCKED_TOOLS: frozenset[str] = frozenset({
+    "edit_file",
+    "edit_files",
+    "write_file",
+    "write_files",
+    "bash",
+    "delegate_task",
+})
+
+
 def _wrap_tools_with_hooks(tools: list) -> list:
     """Wrap tool functions to fire tool.execute.before/after plugin hooks.
 
     Before hook can mutate args; after hook can mutate the result.
     If a before hook raises, the tool is not executed and the error is returned.
+
+    Also enforces the plan-mode gate: when `session.plan_mode` is True,
+    any tool in `_PLAN_MODE_BLOCKED_TOOLS` short-circuits with a structured
+    BLOCKED message telling the agent to call `exit_plan_mode` first. The
+    gate runs BEFORE plugin hooks so plan mode is the highest-priority
+    enforcement; plugins cannot accidentally bypass it.
     """
 
     def _wrap_one(fn):
@@ -43,6 +64,23 @@ def _wrap_tools_with_hooks(tools: list) -> list:
         @functools.wraps(fn)
         async def wrapper(**kwargs):
             tool_name = fn.__name__
+            # Plan-mode gate — fires before any other logic so a mutating
+            # tool never reaches the permission layer or the actual executor.
+            if tool_name in _PLAN_MODE_BLOCKED_TOOLS:
+                try:
+                    from aru.runtime import get_ctx
+                    session = getattr(get_ctx(), "session", None)
+                except (LookupError, AttributeError):
+                    session = None
+                if session is not None and getattr(session, "plan_mode", False):
+                    return (
+                        f"BLOCKED: plan mode is active. Mutating tools "
+                        f"(edit/write/bash/delegate_task) are blocked until the "
+                        f"user approves the plan. Finish writing the plan as "
+                        f"your next assistant message, then call "
+                        f"exit_plan_mode(plan=<full plan text>) to request "
+                        f"approval. Do NOT retry {tool_name}."
+                    )
             # Before hook — plugins can mutate args or raise PermissionError to block
             try:
                 before_data = await _fire_hook("tool.execute.before", {

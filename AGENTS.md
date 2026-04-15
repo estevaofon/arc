@@ -1,6 +1,6 @@
 # Aru — AI Coding Assistant
 
-Aru is a multi-agent CLI coding assistant supporting multiple LLM providers (Anthropic, OpenAI, Ollama, Groq, OpenRouter, DeepSeek) via the Agno framework. It provides an interactive REPL where users describe tasks in natural language, and agents plan and execute code changes using a composable tool set (17 tools in the full set: 13 core + 4 task-management).
+Aru is a multi-agent CLI coding assistant supporting multiple LLM providers (Anthropic, OpenAI, Ollama, Groq, OpenRouter, DeepSeek) via the Agno framework. It provides an interactive REPL where users describe tasks in natural language, and agents plan and execute code changes using a composable tool set (18 tools in the full set: 13 core + 5 task-management).
 
 ## Architecture
 
@@ -33,6 +33,7 @@ aru/
 ├── config.py           # Loads AGENTS.md, .agents/commands/, .agents/skills/
 ├── providers.py        # Multi-provider LLM abstraction (anthropic, openai, ollama, groq, etc.)
 ├── permissions.py      # Granular permission system (allow/ask/deny per tool+pattern)
+├── select.py           # Arrow-key option menu (permission prompt + plan approval)
 ├── agents/
 │   ├── base.py         # Shared instruction templates (BASE_INSTRUCTIONS, roles)
 │   ├── catalog.py      # AgentSpec catalog — build/plan/executor/explorer specs
@@ -54,7 +55,7 @@ aru/
     ├── delegate.py     # delegate_task, sub-agent lifecycle, set_custom_agents
     ├── registry.py     # Tool set composition, TOOL_REGISTRY, resolve_tools, MCP gateway loader
     ├── tasklist.py     # create_task_list / update_task / update_plan_step
-    ├── plan_mode.py    # enter_plan_mode tool — autonomous counterpart to /plan
+    ├── plan_mode.py    # enter_plan_mode / exit_plan_mode — session-flag gate (no nested runner)
     ├── mcp_client.py   # MCP server gateway for external tool integration
     ├── ast_tools.py    # Tree-sitter Python AST analysis (classes, functions, imports)
     ├── ranker.py       # Multi-factor file relevance scoring
@@ -99,9 +100,9 @@ Single source of truth for native agents. Each entry is an `AgentSpec` with a la
 
 | Spec key | Role | Mode | Tool set | Max tokens |
 |----------|------|------|----------|------------|
-| `build` | general | primary | `GENERAL_TOOLS` (17) | 8192 |
+| `build` | general | primary | `GENERAL_TOOLS` (18) | 8192 |
 | `plan` | planner | primary | `PLANNER_TOOLS` (5) | 4096 |
-| `executor` | executor | primary | `EXECUTOR_TOOLS` (17) | 8192 |
+| `executor` | executor | primary | `EXECUTOR_TOOLS` (18) | 8192 |
 | `explorer` | explorer | subagent | `EXPLORER_TOOLS` (7, small model) | 4096 |
 
 Custom agents defined via `.agents/agents/*.md` take a separate path through `create_custom_agent_instance` and are not listed in the catalog.
@@ -128,9 +129,9 @@ Composed tool sets (single source of truth — see `CORE_TOOLS`, `_READ_ONLY_TOO
 | Set | Size | Contents |
 |-----|------|----------|
 | `CORE_TOOLS` | 13 | read/write/edit × file variants, glob/grep/list, bash, web_search/fetch, delegate_task |
-| `ALL_TOOLS` | 17 | `CORE_TOOLS` + `create_task_list`, `update_task`, `update_plan_step`, `enter_plan_mode` |
-| `GENERAL_TOOLS` | 17 | alias for `ALL_TOOLS` (build agent) |
-| `EXECUTOR_TOOLS` | 17 | alias for `ALL_TOOLS` (executor agent) |
+| `ALL_TOOLS` | 18 | `CORE_TOOLS` + `create_task_list`, `update_task`, `update_plan_step`, `enter_plan_mode`, `exit_plan_mode` |
+| `GENERAL_TOOLS` | 18 | alias for `ALL_TOOLS` (build agent) |
+| `EXECUTOR_TOOLS` | 18 | alias for `ALL_TOOLS` (executor agent) |
 | `PLANNER_TOOLS` | 5 | read-only subset: `read_file`, `read_files`, `glob_search`, `grep_search`, `list_directory` |
 | `EXPLORER_TOOLS` | 7 | `PLANNER_TOOLS` + `bash` + `rank_files` |
 | `_SUBAGENT_TOOLS` | 13 | tools passed to delegated sub-agents; excludes `delegate_task` to prevent recursion |
@@ -144,11 +145,11 @@ Tool categories in the file:
 | Shell | `bash` |
 | Web | `web_search`, `web_fetch` |
 | Agent | `delegate_task` (spawns sub-agents via `AgentSpec`) |
-| Task mgmt | `create_task_list`, `update_task`, `update_plan_step`, `enter_plan_mode` |
+| Task mgmt | `create_task_list`, `update_task`, `update_plan_step`, `enter_plan_mode`, `exit_plan_mode` |
 
 ### `tools/tasklist.py` / `tools/plan_mode.py`
 
-Tasklist tracks per-step subtasks during executor runs; `enter_plan_mode` is the autonomous counterpart to the `/plan` slash command, letting the build agent escalate to a structured plan mid-turn.
+Tasklist tracks per-step subtasks during executor runs. `enter_plan_mode` / `exit_plan_mode` are a paired flag-flip — `enter_plan_mode` only sets `session.plan_mode = True` (no nested runner), which makes the tool wrapper in `agent_factory._wrap_tools_with_hooks` short-circuit `_PLAN_MODE_BLOCKED_TOOLS` (edit/write/bash/delegate_task) with a BLOCKED error. The build agent stays in the same loop, writes the plan as its next assistant message, then calls `exit_plan_mode(plan=...)` which shows the approval panel and flips the flag back on approval. Read-only tools (read/grep/glob/list/web_*) pass through plan mode so the agent can still research. The `/plan` slash command is a separate, user-initiated path that still runs the planner agent directly via `runner.prompt` — safe because it's not invoked from inside another tool's Live context.
 
 ### `tools/mcp_client.py` — MCP Gateway
 

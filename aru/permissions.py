@@ -28,6 +28,7 @@ from rich.panel import Panel
 from rich.text import Text
 
 from aru.runtime import get_ctx
+from aru.select import select_option
 
 PermissionAction = Literal["allow", "ask", "deny"]
 
@@ -114,7 +115,49 @@ def get_skip_permissions() -> bool:
 
 def reset_session() -> None:
     """Reset session-level permission state (call between conversations)."""
-    get_ctx().session_allowed.clear()
+    ctx = get_ctx()
+    ctx.session_allowed.clear()
+    ctx.last_rejection_feedback = ""
+
+
+# Modes the user can cycle between with shift+tab in the REPL.
+_MODE_CYCLE: tuple[str, ...] = ("default", "acceptEdits")
+
+MODE_LABELS: dict[str, str] = {
+    "default": "manually accept edits",
+    "acceptEdits": "auto-accept edits",
+}
+
+
+def get_permission_mode() -> str:
+    return get_ctx().permission_mode
+
+
+def set_permission_mode(mode: str) -> str:
+    ctx = get_ctx()
+    if mode not in _MODE_CYCLE:
+        mode = "default"
+    ctx.permission_mode = mode
+    return mode
+
+
+def cycle_permission_mode() -> str:
+    """Advance to the next mode and return it."""
+    ctx = get_ctx()
+    try:
+        idx = _MODE_CYCLE.index(ctx.permission_mode)
+    except ValueError:
+        idx = 0
+    ctx.permission_mode = _MODE_CYCLE[(idx + 1) % len(_MODE_CYCLE)]
+    return ctx.permission_mode
+
+
+def consume_rejection_feedback() -> str:
+    """Return and clear the most recent user-supplied rejection feedback."""
+    ctx = get_ctx()
+    fb = ctx.last_rejection_feedback
+    ctx.last_rejection_feedback = ""
+    return fb
 
 
 def merge_configs(base: PermissionConfig, overlay: PermissionConfig) -> PermissionConfig:
@@ -387,6 +430,10 @@ def resolve_permission(
     if ctx.skip_permissions:
         return ("allow", "*")
 
+    # "Accept edits" mode auto-allows edit/write categories for the session.
+    if ctx.permission_mode == "acceptEdits" and category in ("edit", "write"):
+        return ("allow", "*")
+
     # Check session memory
     for cat, pattern in ctx.session_allowed:
         if cat == category and _match_rule(pattern, subject):
@@ -501,16 +548,50 @@ def check_permission(
             border_style="yellow",
             expand=False,
         ))
-        try:
-            answer = ctx.console.input(
-                "[bold yellow]Allow? (y)es once / (a)lways / (n)o:[/bold yellow] "
-            ).strip().lower()
-            if answer in ("a", "always", "all"):
-                ctx.session_allowed.add((category, matched_pattern))
-                allowed = True
-            else:
-                allowed = answer in ("y", "yes", "s", "sim")
-        except (EOFError, KeyboardInterrupt):
+
+        is_edit = category in ("edit", "write")
+        if is_edit:
+            options = [
+                "Yes",
+                "Yes, and auto-accept edits (shift+tab)",
+                "No, and tell Aru what to do differently",
+            ]
+            reject_index = 2  # "No" option
+        else:
+            options = [
+                "Yes",
+                "No, and tell Aru what to do differently",
+            ]
+            reject_index = 1
+
+        # Arrow-key menu — pauses stdin during render, returns the chosen
+        # index (or reject_index on cancel so Esc/Ctrl+C behaves like "No").
+        choice = select_option(
+            options,
+            title="Choose an option (↑↓ to move, Enter to confirm):",
+            default=0,
+            cancel_value=reject_index,
+        )
+
+        if choice == 0:
+            allowed = True
+        elif is_edit and choice == 1:
+            ctx.permission_mode = "acceptEdits"
+            ctx.console.print(
+                "[dim]Auto-accept edits enabled for this session (shift+tab to toggle).[/dim]"
+            )
+            allowed = True
+        else:
+            # Rejection path — optionally collect feedback for the model.
+            # Catch BaseException so tests and Ctrl+C during feedback don't crash.
+            try:
+                feedback = ctx.console.input(
+                    "[bold yellow]Tell Aru what to do differently (enter to skip):[/bold yellow] "
+                ).strip()
+            except BaseException:
+                feedback = ""
+            if feedback:
+                ctx.last_rejection_feedback = feedback
             allowed = False
 
         # Resume Live display

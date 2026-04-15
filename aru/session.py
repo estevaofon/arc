@@ -173,6 +173,15 @@ class Session:
         self.current_plan: str | None = None
         self.plan_task: str | None = None
         self.plan_steps: list[PlanStep] = []
+        # Plan mode — when True, mutating tools (edit/write/bash/delegate_task)
+        # are blocked by the tool wrapper's gate. Set by enter_plan_mode,
+        # cleared by exit_plan_mode approval, persists across turns.
+        self.plan_mode: bool = False
+        # Feedback from the last rejected plan (auto-approval flow or
+        # exit_plan_mode). Injected into the next turn's plan reminder so
+        # the agent sees the user's critique and revises. Cleared once
+        # consumed by the reminder.
+        self._plan_rejection_feedback: str | None = None
         # Transient flag set by runner when a turn ends with pending plan steps;
         # surfaced as a warning in the next turn's plan reminder, then cleared.
         self._pending_plan_warning: bool = False
@@ -487,6 +496,7 @@ class Session:
             "current_plan": self.current_plan,
             "plan_task": self.plan_task,
             "plan_steps": [s.to_dict() for s in self.plan_steps],
+            "plan_mode": self.plan_mode,
             "model_ref": self.model_ref,
             "cwd": self.cwd,
             "created_at": self.created_at,
@@ -503,6 +513,7 @@ class Session:
         session.current_plan = data.get("current_plan")
         session.plan_task = data.get("plan_task")
         session.plan_steps = [PlanStep.from_dict(s) for s in data.get("plan_steps", [])]
+        session.plan_mode = bool(data.get("plan_mode", False))
         # Support both new "model_ref" and legacy "model_key" for backward compat
         model_ref = data.get("model_ref")
         if not model_ref:

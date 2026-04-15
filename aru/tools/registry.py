@@ -20,7 +20,7 @@ from aru.tools.file_ops import (
     _write_files_tool,
     read_files,
 )
-from aru.tools.plan_mode import enter_plan_mode
+from aru.tools.plan_mode import enter_plan_mode, exit_plan_mode
 from aru.tools.ranker import rank_files
 from aru.tools.search import _glob_search_tool, _grep_search_tool
 from aru.tools.shell import bash
@@ -49,7 +49,13 @@ _WRITE_TOOLS = [
 
 _NET_TOOLS = [web_search, web_fetch]
 
-_TASK_MGMT_TOOLS = [create_task_list, update_task, update_plan_step, enter_plan_mode]
+_TASK_MGMT_TOOLS = [
+    create_task_list,
+    update_task,
+    update_plan_step,
+    enter_plan_mode,
+    exit_plan_mode,
+]
 
 CORE_TOOLS = _READ_ONLY_TOOLS + _WRITE_TOOLS + [bash] + _NET_TOOLS + [delegate_task]
 

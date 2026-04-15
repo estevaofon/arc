@@ -11,7 +11,7 @@ from rich.console import Group
 from rich.syntax import Syntax
 from rich.text import Text
 
-from aru.permissions import check_permission
+from aru.permissions import check_permission, consume_rejection_feedback
 from aru.runtime import get_ctx
 from aru.tools._shared import _notify_file_mutation, _truncate_output
 
@@ -211,6 +211,12 @@ async def bash(command: str, timeout: int = 60, working_directory: str = "") -> 
         Text(f"cwd: {cwd}", style="dim"),
     )
     if not check_permission("bash", command, cmd_display):
+        feedback = consume_rejection_feedback()
+        if feedback:
+            return (
+                f"PERMISSION DENIED by user: {command}. The user said: {feedback}\n"
+                f"Follow the user's instructions instead of retrying."
+            )
         return f"PERMISSION DENIED by user: {command}. Do NOT retry this operation. Stop and ask the user for new instructions."
 
     hook_data = await _fire_plugin_hook("shell.env", {"cwd": cwd, "command": command, "env": {}})

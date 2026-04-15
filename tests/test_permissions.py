@@ -488,33 +488,52 @@ class TestCheckPermissionInteractive:
         set_config(PermissionConfig())
         reset_session()
 
-    def test_ask_always_session_saves_pattern(self, monkeypatch):
-        ctx = get_ctx()
-        ctx.skip_permissions = False
-
-        inputs = iter(["a"])
-        monkeypatch.setattr(ctx.console, "input", lambda _: next(inputs))
-
-        result = check_permission("edit", "main.py", "editing main.py")
-        assert result is True
-        assert ("edit", "*") in ctx.session_allowed
-
     def test_ask_no_denies(self, monkeypatch):
         ctx = get_ctx()
         ctx.skip_permissions = False
 
-        inputs = iter(["n"])
-        monkeypatch.setattr(ctx.console, "input", lambda _: next(inputs))
+        # Arrow-key menu returns index 2 for "No" on edit prompts (the
+        # third option). Feedback input stays textual — empty here.
+        monkeypatch.setattr("aru.permissions.select_option", lambda *a, **kw: 2)
+        monkeypatch.setattr(ctx.console, "input", lambda _: "")
 
         result = check_permission("edit", "src/app.py", "editing src/app.py")
         assert result is False
+
+    def test_ask_no_captures_feedback(self, monkeypatch):
+        from aru.permissions import consume_rejection_feedback
+        ctx = get_ctx()
+        ctx.skip_permissions = False
+
+        monkeypatch.setattr("aru.permissions.select_option", lambda *a, **kw: 2)
+        monkeypatch.setattr(ctx.console, "input", lambda _: "use a different approach")
+
+        result = check_permission("edit", "src/app.py", "editing src/app.py")
+        assert result is False
+        assert consume_rejection_feedback() == "use a different approach"
+
+    def test_auto_accept_option_enables_mode(self, monkeypatch):
+        ctx = get_ctx()
+        ctx.skip_permissions = False
+        ctx.permission_mode = "default"
+
+        # Index 1 = "Yes, and auto-accept edits" on edit prompts.
+        monkeypatch.setattr("aru.permissions.select_option", lambda *a, **kw: 1)
+
+        result = check_permission("edit", "main.py", "editing main.py")
+        assert result is True
+        assert ctx.permission_mode == "acceptEdits"
+        # Mode persists — subsequent edit checks skip the prompt entirely.
+        result2 = check_permission("edit", "other.py", "editing other.py")
+        assert result2 is True
+        ctx.permission_mode = "default"
 
     def test_ask_yes_allows_once(self, monkeypatch):
         ctx = get_ctx()
         ctx.skip_permissions = False
 
-        inputs = iter(["y"])
-        monkeypatch.setattr(ctx.console, "input", lambda _: next(inputs))
+        # Index 0 = "Yes" on both edit and non-edit prompts.
+        monkeypatch.setattr("aru.permissions.select_option", lambda *a, **kw: 0)
 
         result = check_permission("edit", "src/app.py", "editing")
         assert result is True
@@ -523,7 +542,13 @@ class TestCheckPermissionInteractive:
         ctx = get_ctx()
         ctx.skip_permissions = False
 
-        monkeypatch.setattr(ctx.console, "input", lambda _: (_ for _ in ()).throw(KeyboardInterrupt))
+        # select_option returns cancel_value (which the caller sets to
+        # reject_index) when the user presses Ctrl+C / Esc. Simulate that
+        # by having it return the reject_index directly (2 for edits).
+        def _cancel(*args, **kwargs):
+            return kwargs.get("cancel_value", None)
+        monkeypatch.setattr("aru.permissions.select_option", _cancel)
+        monkeypatch.setattr(ctx.console, "input", lambda _: "")
 
         result = check_permission("edit", "main.py", "editing")
         assert result is False
@@ -532,17 +557,23 @@ class TestCheckPermissionInteractive:
         ctx = get_ctx()
         ctx.skip_permissions = False
 
-        monkeypatch.setattr(ctx.console, "input", lambda _: (_ for _ in ()).throw(EOFError))
+        # EOFError out of select_option — the select module catches it and
+        # returns cancel_value, which is reject_index for the caller.
+        def _cancel(*args, **kwargs):
+            return kwargs.get("cancel_value", None)
+        monkeypatch.setattr("aru.permissions.select_option", _cancel)
+        monkeypatch.setattr(ctx.console, "input", lambda _: "")
 
         result = check_permission("edit", "main.py", "editing")
         assert result is False
 
     def test_sim_portuguese_accepted(self, monkeypatch):
+        """With arrow-key selection there's no language-specific parsing —
+        the test remains as a sanity check that index 0 still means yes."""
         ctx = get_ctx()
         ctx.skip_permissions = False
 
-        inputs = iter(["sim"])
-        monkeypatch.setattr(ctx.console, "input", lambda _: next(inputs))
+        monkeypatch.setattr("aru.permissions.select_option", lambda *a, **kw: 0)
 
         result = check_permission("edit", "main.py", "editing")
         assert result is True

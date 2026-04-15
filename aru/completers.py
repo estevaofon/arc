@@ -340,6 +340,16 @@ def _create_prompt_session(paste_state: PasteState, config: AgentConfig | None =
         """Escape+Enter inserts a newline for manual multi-line editing."""
         event.current_buffer.insert_text("\n")
 
+    @bindings.add(Keys.BackTab)
+    def _cycle_permission_mode(event):
+        """Shift+Tab cycles the permission mode (default ↔ auto-accept edits)."""
+        from aru.permissions import cycle_permission_mode
+        try:
+            cycle_permission_mode()
+        except LookupError:
+            pass
+        event.app.invalidate()
+
     custom_cmds = config.commands if config else {}
     skills = config.skills if config else {}
     custom_agents = config.custom_agents if config else {}

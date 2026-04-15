@@ -175,6 +175,26 @@ def _patch_per_call_metrics():
     After each internal API call, Agno calls this function to sum tokens
     into RunMetrics. We intercept it to snapshot the last call's tokens,
     giving us the actual context window size (comparable to OpenCode/Claude Code).
+
+    Provider semantics differ and must be normalized:
+
+    - **Anthropic** reports `input_tokens` as *non-cached* only, with
+      `cache_read_input_tokens` and `cache_creation_input_tokens` as
+      separate, non-overlapping buckets. Total prompt =
+      ``input + cache_read + cache_write``.
+    - **OpenAI-compatible** (OpenAI, Qwen/Alibaba, DeepSeek, Groq, etc.)
+      report `prompt_tokens` as the *total* prompt, with
+      `prompt_tokens_details.cached_tokens` being a *subset* of that total.
+      Total prompt = ``input`` alone; ``cache_read`` is already inside it.
+
+    Agno's adapters populate `metrics.input_tokens` from each provider's
+    native field without normalizing, so the same name means different
+    things. That would double-count cached tokens for OpenAI-style providers
+    in any formula that does ``input + cache_read``. To keep the rest of
+    Aru provider-agnostic, normalize here: subtract `cache_read` from
+    `input_tokens` whenever the provider overlaps them, so downstream code
+    can always treat `(input, cache_read, cache_write)` as non-overlapping
+    and sum them safely.
     """
     from agno.metrics import accumulate_model_metrics as _original_accumulate
 
@@ -185,10 +205,26 @@ def _patch_per_call_metrics():
         global _last_call_cache_read, _last_call_cache_write
         usage = getattr(model_response, "response_usage", None)
         if usage is not None:
-            _last_call_input_tokens = getattr(usage, "input_tokens", 0) or 0
-            _last_call_output_tokens = getattr(usage, "output_tokens", 0) or 0
-            _last_call_cache_read = getattr(usage, "cache_read_tokens", 0) or 0
-            _last_call_cache_write = getattr(usage, "cache_write_tokens", 0) or 0
+            input_tokens = getattr(usage, "input_tokens", 0) or 0
+            output_tokens = getattr(usage, "output_tokens", 0) or 0
+            cache_read = getattr(usage, "cache_read_tokens", 0) or 0
+            cache_write = getattr(usage, "cache_write_tokens", 0) or 0
+
+            # For non-Anthropic providers, `input_tokens` already includes
+            # the cached portion, so subtract it to match Anthropic's
+            # non-overlapping semantics. See docstring above.
+            try:
+                provider_name = model.get_provider() if hasattr(model, "get_provider") else ""
+            except Exception:
+                provider_name = ""
+            is_anthropic = "anthropic" in (provider_name or "").lower()
+            if not is_anthropic and cache_read and input_tokens >= cache_read:
+                input_tokens -= cache_read
+
+            _last_call_input_tokens = input_tokens
+            _last_call_output_tokens = output_tokens
+            _last_call_cache_read = cache_read
+            _last_call_cache_write = cache_write
         return _original_accumulate(model_response, model, model_type, run_metrics)
 
     _metrics_module.accumulate_model_metrics = _patched_accumulate

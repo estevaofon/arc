@@ -283,12 +283,24 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
                         f'  <style fg="ansigray">│</style>'
                         f'  <style fg="ansigray">{ctx.mcp_loaded_msg}</style>'
                     )
+                if ctx.permission_mode == "acceptEdits":
+                    mode_part = (
+                        f'  <style fg="ansigray">│</style>'
+                        f'  <b><style fg="ansigreen">⏵⏵ auto-accept edits on</style></b>'
+                        f'  <style fg="ansigray">(shift+tab to toggle)</style>'
+                    )
+                else:
+                    mode_part = (
+                        f'  <style fg="ansigray">│</style>'
+                        f'  <style fg="ansigray">shift+tab auto-accept</style>'
+                    )
                 return HTML(
                     f'  <style fg="ansigray">{model_tb}</style>'
                     f'  <style fg="ansigray">│</style>'
                     f'  <style fg="ansigray">/help</style>'
                     f'  <style fg="ansigray">│</style>'
                     f'  <style fg="ansigray">Esc+Enter newline</style>'
+                    f'{mode_part}'
                     f'{mcp_part}'
                 )
 
@@ -390,6 +402,12 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
             if choice in ("b", "v"):
                 # Remove last turn from conversation
                 msgs_removed = session.undo_last_turn()
+                # Conversation restore also reverts plan-mode state — the
+                # undone turn may have entered plan mode, and leaving the
+                # flag on would block the next turn's mutating tools.
+                if session.plan_mode:
+                    session.plan_mode = False
+                    session.clear_plan()
 
             parts = []
             if restored_files:
