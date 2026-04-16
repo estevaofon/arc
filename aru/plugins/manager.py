@@ -376,9 +376,17 @@ def _parse_plugin_spec(spec: str | list) -> tuple[str, dict | None]:
 
 
 def _default_plugin_roots() -> list[Path]:
-    """Default plugin search roots: global dirs first, then project-local."""
+    """Default plugin search roots: cached plugins first, then global, then project-local."""
     import os
     roots: list[Path] = []
+
+    # Cached plugins (lowest priority — local/global override)
+    try:
+        from aru.plugin_cache import get_cached_plugin_roots
+        roots.extend(get_cached_plugin_roots())
+    except Exception as exc:
+        logger.warning("Failed to load cached plugin roots: %s", exc)
+
     home = Path.home()
     for dirname in (".agents", ".aru"):
         d = home / dirname

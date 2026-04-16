@@ -136,6 +136,11 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
 
     # Load project configuration
     config = load_config()
+    ctx.config = config
+    # Populate invoke_skill's dynamic docstring so the LLM-facing schema lists
+    # the skills actually available on this machine.
+    from aru.tools.skill import _update_invoke_skill_docstring
+    _update_invoke_skill_docstring(config.skills)
     if config.agents_md:
         console.print("[dim]Loaded AGENTS.md[/dim]")
     if config.commands:
@@ -546,6 +551,12 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
                     console.print(f"  [bold cyan]{entry.name}[/bold cyan]  [dim]{entry.description}[/dim]")
             continue
 
+        if user_input.lower() == "/plugin" or user_input.lower().startswith("/plugin "):
+            from aru.commands import handle_plugin_command
+            rest = user_input[len("/plugin"):].strip()
+            handle_plugin_command(rest)
+            continue
+
         if user_input.lower() == "/help":
             _show_help(config)
             continue
@@ -746,6 +757,10 @@ async def run_oneshot(prompt: str, print_only: bool = False, skip_permissions: b
     ctx = init_ctx(console=console, skip_permissions=skip_permissions)
 
     config = load_config()
+    ctx.config = config
+    # Populate invoke_skill's dynamic docstring (same as interactive path)
+    from aru.tools.skill import _update_invoke_skill_docstring
+    _update_invoke_skill_docstring(config.skills)
     session = Session()
     if config.default_model:
         session.model_ref = config.default_model

@@ -535,9 +535,15 @@ def load_config(cwd: str | None = None) -> AgentConfig:
         config.commands = _load_commands(agents_dir)
 
     # Discover skills from multiple roots (agentskills.io convention)
-    # Order: global paths first, project-local last (local overrides global)
+    # Order: cached plugins first (lowest priority), then global, then project-local
+    # (local overrides global overrides cache — lets users shadow plugin skills).
     home = Path.home()
     skill_roots: list[Path] = []
+    try:
+        from aru.plugin_cache import get_cached_plugin_roots
+        skill_roots.extend(get_cached_plugin_roots())
+    except Exception as exc:  # defensive: never fail config load over cache
+        logger.warning("Failed to load cached plugin roots: %s", exc)
     for dirname in (".agents", ".claude"):
         global_dir = home / dirname
         if global_dir.is_dir():

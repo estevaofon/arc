@@ -24,6 +24,7 @@ from aru.tools.plan_mode import enter_plan_mode, exit_plan_mode
 from aru.tools.ranker import rank_files
 from aru.tools.search import _glob_search_tool, _grep_search_tool
 from aru.tools.shell import bash
+from aru.tools.skill import invoke_skill
 from aru.tools.tasklist import create_task_list, update_plan_step, update_task
 from aru.tools.web import web_fetch, web_search
 
@@ -57,9 +58,14 @@ _TASK_MGMT_TOOLS = [
     exit_plan_mode,
 ]
 
+# Skill invocation tool — lets primary agents load another skill's SKILL.md
+# into the next turn's context. Kept separate from _TASK_MGMT_TOOLS for
+# clarity; excluded from subagent / planner / explorer sets.
+_SKILL_TOOLS = [invoke_skill]
+
 CORE_TOOLS = _READ_ONLY_TOOLS + _WRITE_TOOLS + [bash] + _NET_TOOLS + [delegate_task]
 
-ALL_TOOLS = _TASK_MGMT_TOOLS + CORE_TOOLS
+ALL_TOOLS = _TASK_MGMT_TOOLS + _SKILL_TOOLS + CORE_TOOLS
 
 # GENERAL_TOOLS and EXECUTOR_TOOLS used to diverge silently; both are now the
 # same canonical set. Keep separate names for callers that reference them.

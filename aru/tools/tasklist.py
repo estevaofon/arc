@@ -64,31 +64,36 @@ def _show(panel: Panel) -> None:
 
 
 def create_task_list(tasks: list[str]) -> str:
-    """Create a subtask list for the current step. MUST be called before any other tool.
+    """Set (or replace) the subtask list for the current phase.
 
-    Define 1-10 concrete subtasks that you will execute in order.
-    Each subtask should be a single action (Read, Write, Edit, Run).
+    Idempotent: each call fully REPLACES any prior list. Calling this a second
+    time — e.g. on entering a new skill or starting a new plan step — is
+    expected and supported. There is no "already created" refusal; if you
+    need a fresh list, just call this again.
+
+    Define 1-10 concrete subtasks that you will execute in order. Each
+    subtask should be a single action.
 
     Args:
         tasks: List of subtask descriptions. Min 1, max 10.
                Example: ["Read backend/models.py", "Write backend/auth.py", "Edit backend/main.py — add import", "Run pytest"]
     """
-    store = get_ctx().task_store
-    if store.is_created:
-        return "Error: Task list already created for this step. Use update_task to update subtask status."
-
     if len(tasks) < 1:
         return "Error: Minimum 1 subtask required."
 
     if len(tasks) > MAX_SUBTASKS:
         return f"Error: Maximum {MAX_SUBTASKS} subtasks allowed. Got {len(tasks)}. Simplify your plan."
 
+    store = get_ctx().task_store
+    was_replaced = store.is_created
+    store.reset()
     created = store.create(tasks)
     panel = _render_task_list(created)
     _show(panel)
 
     task_lines = "\n".join(f"  {t['index']}. {t['description']}" for t in created)
-    return f"Task list created ({len(created)} subtasks):\n{task_lines}\n\nNow execute subtask 1."
+    verb = "replaced" if was_replaced else "created"
+    return f"Task list {verb} ({len(created)} subtasks):\n{task_lines}\n\nNow execute subtask 1."
 
 
 def update_task(index: int, status: str) -> str:

@@ -23,6 +23,24 @@ def fresh_runtime_context():
     yield ctx
 
 
+@pytest.fixture(autouse=True)
+def isolated_plugin_cache(tmp_path_factory, monkeypatch):
+    """Redirect plugin_cache paths to a temporary location per session.
+
+    Without this, any plugins installed to ~/.aru/plugins/cache/packages/
+    on the dev machine would leak into tests that load AgentConfig or
+    default plugin/tool search roots.
+    """
+    from aru import plugin_cache as pc
+    iso_root = tmp_path_factory.mktemp("plugin_cache_iso")
+    monkeypatch.setattr(pc, "ARU_HOME", iso_root)
+    monkeypatch.setattr(pc, "PLUGINS_ROOT", iso_root / "plugins")
+    monkeypatch.setattr(pc, "CACHE_DIR", iso_root / "plugins" / "cache" / "packages")
+    monkeypatch.setattr(pc, "META_PATH", iso_root / "plugins" / "meta.json")
+    monkeypatch.setattr(pc, "LOCK_DIR", iso_root / "plugins" / "locks")
+    yield iso_root
+
+
 @pytest.fixture
 def temp_dir() -> Iterator[Path]:
     """Create a temporary directory for testing.

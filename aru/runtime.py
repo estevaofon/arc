@@ -131,6 +131,9 @@ class RuntimeContext:
     # -- Checkpoints --
     checkpoint_manager: Any = None  # aru.checkpoints.CheckpointManager (lazy)
 
+    # -- Config (for skill lookup from tools like invoke_skill) --
+    config: Any = None  # aru.config.AgentConfig
+
 
 # ── ContextVar plumbing ──────────────────────────────────────────────
 

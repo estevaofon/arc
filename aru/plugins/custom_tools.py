@@ -329,9 +329,17 @@ def register_custom_tools(tool_descriptors: list[dict[str, Any]]) -> int:
 
 
 def _default_search_roots() -> list[Path]:
-    """Return default tool search roots: global dirs first, then project-local."""
+    """Return default tool search roots: cached plugins first, then global, then project-local."""
     import os
     roots: list[Path] = []
+
+    # Cached plugins (lowest priority — local/global override)
+    try:
+        from aru.plugin_cache import get_cached_plugin_roots
+        roots.extend(get_cached_plugin_roots())
+    except Exception as exc:
+        logger.warning("Failed to load cached plugin roots: %s", exc)
+
     home = Path.home()
 
     # Global roots

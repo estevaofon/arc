@@ -1,6 +1,6 @@
 # Aru — AI Coding Assistant
 
-Aru is a multi-agent CLI coding assistant supporting multiple LLM providers (Anthropic, OpenAI, Ollama, Groq, OpenRouter, DeepSeek) via the Agno framework. It provides an interactive REPL where users describe tasks in natural language, and agents plan and execute code changes using a composable tool set (18 tools in the full set: 13 core + 5 task-management).
+Aru is a multi-agent CLI coding assistant supporting multiple LLM providers (Anthropic, OpenAI, Ollama, Groq, OpenRouter, DeepSeek) via the Agno framework. It provides an interactive REPL where users describe tasks in natural language, and agents plan and execute code changes using a composable tool set (19 tools in the full set: 13 core + 5 task-management + 1 skill invocation).
 
 ## Architecture
 
@@ -33,6 +33,7 @@ aru/
 ├── config.py           # Loads AGENTS.md, .agents/commands/, .agents/skills/
 ├── providers.py        # Multi-provider LLM abstraction (anthropic, openai, ollama, groq, etc.)
 ├── permissions.py      # Granular permission system (allow/ask/deny per tool+pattern)
+├── plugin_cache.py     # Plugin install/cache/discovery system (/plugin command backend)
 ├── select.py           # Arrow-key option menu (permission prompt + plan approval)
 ├── agents/
 │   ├── base.py         # Shared instruction templates (BASE_INSTRUCTIONS, roles)
@@ -56,6 +57,7 @@ aru/
     ├── registry.py     # Tool set composition, TOOL_REGISTRY, resolve_tools, MCP gateway loader
     ├── tasklist.py     # create_task_list / update_task / update_plan_step
     ├── plan_mode.py    # enter_plan_mode / exit_plan_mode — session-flag gate (no nested runner)
+    ├── skill.py        # invoke_skill — load another skill's SKILL.md into next-turn context
     ├── mcp_client.py   # MCP server gateway for external tool integration
     ├── ast_tools.py    # Tree-sitter Python AST analysis (classes, functions, imports)
     ├── ranker.py       # Multi-factor file relevance scoring
@@ -100,9 +102,9 @@ Single source of truth for native agents. Each entry is an `AgentSpec` with a la
 
 | Spec key | Role | Mode | Tool set | Max tokens |
 |----------|------|------|----------|------------|
-| `build` | general | primary | `GENERAL_TOOLS` (18) | 8192 |
+| `build` | general | primary | `GENERAL_TOOLS` (19) | 8192 |
 | `plan` | planner | primary | `PLANNER_TOOLS` (5) | 4096 |
-| `executor` | executor | primary | `EXECUTOR_TOOLS` (18) | 8192 |
+| `executor` | executor | primary | `EXECUTOR_TOOLS` (19) | 8192 |
 | `explorer` | explorer | subagent | `EXPLORER_TOOLS` (7, small model) | 4096 |
 
 Custom agents defined via `.agents/agents/*.md` take a separate path through `create_custom_agent_instance` and are not listed in the catalog.
@@ -129,12 +131,12 @@ Composed tool sets (single source of truth — see `CORE_TOOLS`, `_READ_ONLY_TOO
 | Set | Size | Contents |
 |-----|------|----------|
 | `CORE_TOOLS` | 13 | read/write/edit × file variants, glob/grep/list, bash, web_search/fetch, delegate_task |
-| `ALL_TOOLS` | 18 | `CORE_TOOLS` + `create_task_list`, `update_task`, `update_plan_step`, `enter_plan_mode`, `exit_plan_mode` |
-| `GENERAL_TOOLS` | 18 | alias for `ALL_TOOLS` (build agent) |
-| `EXECUTOR_TOOLS` | 18 | alias for `ALL_TOOLS` (executor agent) |
+| `ALL_TOOLS` | 19 | `CORE_TOOLS` + `create_task_list`, `update_task`, `update_plan_step`, `enter_plan_mode`, `exit_plan_mode`, `invoke_skill` |
+| `GENERAL_TOOLS` | 19 | alias for `ALL_TOOLS` (build agent) |
+| `EXECUTOR_TOOLS` | 19 | alias for `ALL_TOOLS` (executor agent) |
 | `PLANNER_TOOLS` | 5 | read-only subset: `read_file`, `read_files`, `glob_search`, `grep_search`, `list_directory` |
 | `EXPLORER_TOOLS` | 7 | `PLANNER_TOOLS` + `bash` + `rank_files` |
-| `_SUBAGENT_TOOLS` | 13 | tools passed to delegated sub-agents; excludes `delegate_task` to prevent recursion |
+| `_SUBAGENT_TOOLS` | 13 | tools passed to delegated sub-agents; excludes `delegate_task` and `invoke_skill` (controller pre-bakes skill content into subagent context) |
 
 Tool categories in the file:
 
@@ -146,6 +148,17 @@ Tool categories in the file:
 | Web | `web_search`, `web_fetch` |
 | Agent | `delegate_task` (spawns sub-agents via `AgentSpec`) |
 | Task mgmt | `create_task_list`, `update_task`, `update_plan_step`, `enter_plan_mode`, `exit_plan_mode` |
+| Skill | `invoke_skill` (load another skill's SKILL.md into next-turn context — used for multi-skill workflow transitions) |
+
+### `tools/skill.py` — Skill Invocation Tool
+
+Exposes `invoke_skill(name, arguments)` to primary agents. The tool looks up a skill by name in `ctx.config.skills`, renders its body via `render_skill_template` (applying `$ARGUMENTS` / `$1` / `$2` substitution), and returns the framed content as a `tool_result`. Agno includes that result in the next LLM call's context, so the loaded skill's instructions naturally guide the agent's next turn.
+
+This is the primary mechanism for **multi-skill workflows** where one skill needs to hand off to the next (e.g. a `brainstorming` skill whose terminal state is "now load `writing-plans`"). Without this tool, such workflows require the user to re-type slash commands for each phase, and the agent improvises the next phase from memory without the target SKILL.md actually being in context.
+
+`invoke_skill.__doc__` is updated at startup via `_update_invoke_skill_docstring(config.skills)` (called from `cli.py:run_cli` and `run_oneshot`) so the LLM-facing schema lists available skill names + descriptions. Skills with `disable_model_invocation: true` in their frontmatter are hidden and refused by the tool.
+
+The tool is part of `GENERAL_TOOLS` / `EXECUTOR_TOOLS` but intentionally excluded from `_SUBAGENT_TOOLS`, `PLANNER_TOOLS`, `EXPLORER_TOOLS`, and `_PLAN_MODE_BLOCKED_TOOLS` (loading text is side-effect-free; mutating tools stay blocked in plan mode independently).
 
 ### `tools/tasklist.py` / `tools/plan_mode.py`
 
@@ -173,6 +186,54 @@ Custom tool format: `@tool` decorator or bare `def fn() -> str`. Discovery: `~/.
 
 Plugin hooks: `config`, `tool.execute.before/after`, `tool.definition`, `permission.ask`, `shell.env`, `session.compact`, `chat.message`, `chat.params`, `chat.system.transform`, `chat.messages.transform`, `command.execute.before`, `event`.
 
+### `plugin_cache.py` — Plugin Installation & Caching
+
+Inspired by OpenCode's plugin architecture. Allows installing plugins from git URLs or local paths, caching them under `~/.aru/plugins/cache/packages/<name>/`, and having their `skills/`, `agents/`, `tools/`, `plugins/` subdirectories auto-discovered alongside local content.
+
+**Spec formats accepted by `install()`:**
+
+| Spec | Source | Resolution |
+|------|--------|------------|
+| `github:user/repo` | git | `https://github.com/user/repo.git` |
+| `github:user/repo@v1.0.0` | git | Same, pinned to tag/branch `v1.0.0` |
+| `git+https://host/path.git` | git | Any git URL |
+| `git+https://host/path.git@ref` | git | With explicit ref |
+| `file:///abs/path` | file | Local directory (copied into cache) |
+| `./relative/path` or absolute | file | Local directory |
+
+**Manifest** (`aru-plugin.json`, optional, at plugin root):
+```json
+{
+  "name": "my-plugin",
+  "version": "1.0.0",
+  "description": "...",
+  "engines": { "aru": ">=0.26.0" }
+}
+```
+
+Compatibility is checked via `engines.aru` using a small semver subset (`>=`, `<=`, `==`, `>`, `<`, `~=`, `^`, `*`).
+
+**Discovery integration**: `get_cached_plugin_roots()` is prepended to the search roots in:
+- `config._discover_skills` / `_discover_agents`
+- `plugins.custom_tools._default_search_roots`
+- `plugins.manager._default_plugin_roots`
+
+**Priority**: cache < global (`~/.agents/`, `~/.claude/`, `~/.aru/`) < project-local (`.agents/`, `.claude/`, `.aru/`). Local content always shadows cached plugin content.
+
+**CLI commands** (see `commands.handle_plugin_command`):
+
+| Subcommand | Purpose |
+|------------|---------|
+| `/plugin install <spec> [name]` | Install plugin from git/file; optional name override |
+| `/plugin list` | Show installed plugins from `~/.aru/plugins/meta.json` |
+| `/plugin remove <name>` | Delete plugin from cache and meta |
+| `/plugin update <name>` | Reinstall / `git pull` on cached plugin |
+| `/plugin info <name>` | Show manifest + metadata for a plugin |
+
+**Metadata** (`~/.aru/plugins/meta.json`): tracks id, source, spec, version, fingerprint (sha256 of tree), first_time, last_time, time_changed, load_count. Used for update detection and `/plugin list`.
+
+**Concurrency safety**: file locks in `~/.aru/plugins/locks/<name>.lock` with a 1h TTL for stale-lock reclamation. Ensures concurrent `/plugin install` on the same plugin is serialized.
+
 ## Configuration
 
 - `.env` → `ANTHROPIC_API_KEY`
@@ -183,6 +244,8 @@ Plugin hooks: `config`, `tool.execute.before/after`, `tool.definition`, `permiss
 - `.aru/tools/*.py` → custom tools (Python)
 - `.aru/plugins/*.py` → custom plugins (Python)
 - `.aru/sessions/` → saved conversation sessions (JSON)
+- `~/.aru/plugins/cache/packages/<name>/` → installed plugins (git cloned or local copied)
+- `~/.aru/plugins/meta.json` → installed-plugin metadata (version, fingerprint, install dates)
 
 ## Development
 
