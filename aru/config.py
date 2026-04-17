@@ -43,6 +43,12 @@ class Skill:
     disable_model_invocation: bool = False
     user_invocable: bool = True
     argument_hint: str = ""
+    # Short (~1-2 sentences) reminder used by the core to reinforce the
+    # skill's critical gates during compaction. Not re-injected per turn —
+    # it only appears wrapped in `<system-reminder>` when a compaction
+    # would otherwise drop the skill body from history. When absent, the
+    # core derives a default from `description`.
+    reminder: str = ""
 
 
 @dataclass
@@ -275,6 +281,9 @@ def _parse_skill_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     else:
         result["disallowed_tools"] = []
 
+    reminder_raw = metadata.get("reminder", "")
+    result["reminder"] = str(reminder_raw).strip() if reminder_raw else ""
+
     return result
 
 
@@ -395,6 +404,7 @@ def _discover_skills(search_roots: list[Path]) -> dict[str, Skill]:
                 disable_model_invocation=meta["disable_model_invocation"],
                 user_invocable=meta["user_invocable"],
                 argument_hint=meta["argument_hint"],
+                reminder=meta["reminder"],
             )
 
     return skills

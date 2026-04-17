@@ -52,6 +52,20 @@ TRUNCATE_SAVE_DIR = ".aru/truncated"
 # opencode's approach where the split point mirrors the prune window.
 COMPACT_RECENT_CHARS = 160_000
 
+# Per-skill head-keep cap when preserving invoked SKILL.md bodies through a
+# compaction. 20K chars ≈ 5K tokens (claude-code POST_COMPACT_MAX_TOKENS_PER_SKILL).
+# The head is kept because SKILL.md files put gates and checklists at the top.
+POST_COMPACT_MAX_CHARS_PER_SKILL = 20_000
+# Total budget across all invoked skills in the preservation block.
+# 100K chars ≈ 25K tokens (claude-code POST_COMPACT_SKILLS_TOKEN_BUDGET).
+# Skills are sorted most-recent-first; older ones are dropped when the budget
+# fills, so stale mid-session invocations don't crowd out the skill you're
+# currently following.
+POST_COMPACT_SKILLS_BUDGET_CHARS = 100_000
+# Marker appended to a per-skill body when it was truncated — tells the model
+# it can re-read the full SKILL.md at the source path if needed.
+SKILL_TRUNCATION_MARKER = "\n\n[... SKILL.md truncated for budget. Re-read the file if details below the cutoff are needed.]"
+
 # Compaction: trigger when per-call input tokens approach real overflow.
 # Matches opencode's philosophy: only fire near the model's actual context
 # limit, not routinely. Routine context reduction is handled by prune_history
@@ -607,8 +621,88 @@ def build_compaction_prompt(
 
 
 
+def _build_skills_preservation_item(invoked_skills: dict | None) -> dict | None:
+    """Build a user message preserving invoked SKILL.md bodies through compaction.
+
+    Mirrors claude-code's `createSkillAttachmentIfNeeded` (compact.ts:1494) +
+    the `'invoked_skills'` branch of the attachment renderer (messages.ts:3644).
+    Skills are sorted most-recent-first; each body is head-capped at
+    `POST_COMPACT_MAX_CHARS_PER_SKILL`; once the cumulative total crosses
+    `POST_COMPACT_SKILLS_BUDGET_CHARS` subsequent (older) skills are dropped.
+
+    The rendered item is a **user meta-message** whose content is wrapped in
+    `<system-reminder>` tags — this signals to the model that the block is a
+    system-level reminder (elevated attention) rather than fresh user intent.
+    Mirrors `wrapMessagesInSystemReminder` from claude-code.
+
+    Returns None when there is nothing to preserve (no invoked skills, or all
+    bodies empty), so the caller can skip injection cleanly.
+
+    Args:
+        invoked_skills: session.invoked_skills — dict keyed by skill name with
+            `.content`, `.source_path`, `.invoked_at` attributes (InvokedSkill
+            instances; dict-shaped values are tolerated for from-JSON callers).
+    """
+    if not invoked_skills:
+        return None
+
+    def _attr(obj, name, default=""):
+        if isinstance(obj, dict):
+            return obj.get(name, default)
+        return getattr(obj, name, default)
+
+    # Sort most-recent-first so budget pressure drops the oldest skills first.
+    entries = sorted(
+        invoked_skills.values(),
+        key=lambda s: float(_attr(s, "invoked_at", 0.0)) or 0.0,
+        reverse=True,
+    )
+
+    rendered_blocks: list[str] = []
+    used_chars = 0
+    for skill in entries:
+        body = str(_attr(skill, "content", "") or "")
+        if not body.strip():
+            continue
+        # Head-keep cap per skill
+        if len(body) > POST_COMPACT_MAX_CHARS_PER_SKILL:
+            body = body[: POST_COMPACT_MAX_CHARS_PER_SKILL - len(SKILL_TRUNCATION_MARKER)] + SKILL_TRUNCATION_MARKER
+        if used_chars + len(body) > POST_COMPACT_SKILLS_BUDGET_CHARS:
+            break
+        used_chars += len(body)
+
+        name = str(_attr(skill, "name", "") or "?")
+        path = str(_attr(skill, "source_path", "") or "")
+        header = f"### Skill: /{name}"
+        if path:
+            header += f"\nPath: {path}"
+        rendered_blocks.append(f"{header}\n\n{body}")
+
+    if not rendered_blocks:
+        return None
+
+    skills_text = "\n\n---\n\n".join(rendered_blocks)
+    preserved = (
+        "<system-reminder>\n"
+        "The following skills were invoked earlier in this session and their full SKILL.md bodies "
+        "were summarized out during compaction. Continue to follow these guidelines exactly — all "
+        "gates, checklists, and forbidden shortcuts still apply.\n\n"
+        f"{skills_text}\n"
+        "</system-reminder>"
+    )
+
+    from aru.history_blocks import text_block
+    return {
+        "role": "user",
+        "content": [text_block(preserved)],
+    }
+
+
 def apply_compaction(
-    history: list[dict], summary: str, model_id: str = "default"
+    history: list[dict],
+    summary: str,
+    model_id: str = "default",
+    invoked_skills: dict | None = None,
 ) -> list[dict]:
     """Replace OLD messages with a summary, keep RECENT messages intact.
 
@@ -616,12 +710,19 @@ def apply_compaction(
     role alternation stays natural:
         [user: "Please summarize..."]
         [assistant: "<summary>", summary=True]
+        [user: "<system-reminder>...invoked skills...</system-reminder>"]  ← when invoked_skills
         + recent messages as-is
 
     The assistant summary is marked with `summary: True` as a checkpoint.
     `prune_history` walks backward and stops at this marker, so content
     already consolidated into the summary is never re-processed. Mirrors
     opencode's `msg.info.summary` flag (see message-v2.ts:914).
+
+    `invoked_skills` (claude-code parity — `STATE.invokedSkills`) is the
+    session's record of every SKILL.md invoked so far. When provided, a
+    skills-preservation `<system-reminder>` is injected right after the
+    summary so the model continues following skill gates even though the
+    original SKILL.md body was folded into the summary.
     """
     from aru.history_blocks import text_block, coerce_history_item
     _, recent = _split_history(history, model_id)
@@ -637,6 +738,11 @@ def apply_compaction(
             "summary": True,
         },
     ]
+
+    skills_item = _build_skills_preservation_item(invoked_skills)
+    if skills_item is not None:
+        compacted.append(skills_item)
+
     compacted.extend(coerce_history_item(m) for m in recent)
 
     return compacted
@@ -647,6 +753,7 @@ async def compact_conversation(
     model_ref: str,
     plan_task: str | None = None,
     model_id: str = "default",
+    invoked_skills: dict | None = None,
 ) -> list[dict[str, str]]:
     """Run the compaction agent to summarize and replace history.
 
@@ -663,6 +770,13 @@ async def compact_conversation(
       step.
 
     Falls back to a mechanical summary if the agent call fails.
+
+    `invoked_skills` is `session.invoked_skills` — passed through to
+    `apply_compaction` so SKILL.md bodies survive the summary via a
+    `<system-reminder>` preservation block. When None (caller didn't pass
+    it, e.g. tests, subagent flows), `get_ctx().session.invoked_skills` is
+    consulted as a best-effort fallback. See claude-code
+    `createSkillAttachmentIfNeeded` for the pattern.
     """
     from aru.providers import create_model
 
@@ -676,6 +790,19 @@ async def compact_conversation(
             history = event.data.get("history", history)
     except (LookupError, AttributeError, ImportError):
         pass  # no plugin manager available — proceed without hooks
+
+    # Best-effort: if caller didn't pass invoked_skills but there's a session
+    # in the current runtime context, use its record. Keeps legacy call sites
+    # (subagent compaction, tests) covered without forcing every caller to
+    # plumb the session through.
+    if invoked_skills is None:
+        try:
+            from aru.runtime import get_ctx
+            session = getattr(get_ctx(), "session", None)
+            if session is not None:
+                invoked_skills = getattr(session, "invoked_skills", None)
+        except (LookupError, AttributeError, ImportError):
+            pass
 
     prompt = build_compaction_prompt(history, plan_task, model_id=model_id)
 
@@ -705,12 +832,12 @@ async def compact_conversation(
             # Fallback: simple mechanical summary
             summary = _fallback_summary(history, plan_task)
 
-        return apply_compaction(history, summary, model_id=model_id)
+        return apply_compaction(history, summary, model_id=model_id, invoked_skills=invoked_skills)
 
     except Exception:
         # Fallback if agent fails
         summary = _fallback_summary(history, plan_task)
-        return apply_compaction(history, summary, model_id=model_id)
+        return apply_compaction(history, summary, model_id=model_id, invoked_skills=invoked_skills)
 
 
 def _fallback_summary(history: list[dict], plan_task: str | None = None) -> str:

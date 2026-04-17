@@ -627,6 +627,7 @@ async def run_agent_capture(agent, message: str, session=None, lightweight: bool
                         session.history = await compact_conversation(
                             session.history, session.model_ref, session.plan_task,
                             model_id=session.model_id,
+                            invoked_skills=session.invoked_skills,
                         )
                         console.print("[dim]Context compacted to save tokens.[/dim]")
                     except Exception:

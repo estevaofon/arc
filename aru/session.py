@@ -60,6 +60,49 @@ MODEL_PRICING: dict[str, tuple[float, float, float, float]] = {
 SESSIONS_DIR = os.path.join(".aru", "sessions")
 
 
+class InvokedSkill:
+    """Record of a skill that was invoked in this session.
+
+    Held in `session.invoked_skills` so the content survives compaction —
+    mirrors claude-code's `STATE.invokedSkills`. The core re-injects the
+    stored body (or the skill's shorter `reminder`) inside
+    `<system-reminder>` after a compaction would otherwise drop it.
+
+    Attributes:
+        name: The skill's dir/slash name (e.g. "brainstorming").
+        content: The SKILL.md body — what the model saw on the initial
+            injection. Stored verbatim so post-compact restoration is
+            identical to what the model read the first time.
+        source_path: Absolute path to the SKILL.md file (for reference).
+        invoked_at: Unix timestamp (seconds) — used to sort by recency
+            when multiple skills were invoked and the preservation
+            budget must drop some.
+    """
+
+    def __init__(self, name: str, content: str, source_path: str = "", invoked_at: float | None = None):
+        self.name = name
+        self.content = content
+        self.source_path = source_path
+        self.invoked_at = time.time() if invoked_at is None else invoked_at
+
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "content": self.content,
+            "source_path": self.source_path,
+            "invoked_at": self.invoked_at,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "InvokedSkill":
+        return cls(
+            name=str(data.get("name", "")),
+            content=str(data.get("content", "")),
+            source_path=str(data.get("source_path", "")),
+            invoked_at=float(data.get("invoked_at") or time.time()),
+        )
+
+
 class PlanStep:
     """A single step in a structured plan."""
 
@@ -183,6 +226,13 @@ class Session:
         # Single slot: invoking a new skill replaces the previous one, matching
         # the existing task_store.reset() replacement semantic in invoke_skill.
         self.active_skill: str | None = None
+        # All skills invoked in this session, keyed by name. Grows as skills are
+        # invoked; never shrinks during a session (claude-code parity — the
+        # skill's guidelines remain relevant even after moving to the next skill
+        # in a multi-skill workflow, e.g. brainstorming → writing-plans). Used
+        # by compaction to preserve skill bodies via `<system-reminder>`
+        # attachment when the summary would otherwise drop them from history.
+        self.invoked_skills: dict[str, InvokedSkill] = {}
         # Feedback from the last rejected plan (auto-approval flow or
         # exit_plan_mode). Injected into the next turn's plan reminder so
         # the agent sees the user's critique and revises. Cleared once
@@ -269,6 +319,21 @@ class Session:
         # (or end-of-turn) will handle it. But mark pending so an explicit
         # clear without a replacement still flushes any stale queued state.
         self._plan_render_pending = False
+
+    def record_invoked_skill(self, name: str, content: str, source_path: str = "") -> None:
+        """Register a skill invocation so its body survives compaction.
+
+        Called by the CLI slash-command dispatcher and by the `invoke_skill`
+        tool. Re-invoking the same skill refreshes `invoked_at` and overwrites
+        the stored content (useful if the SKILL.md was edited mid-session).
+        """
+        if not name:
+            return
+        self.invoked_skills[name] = InvokedSkill(
+            name=name,
+            content=content,
+            source_path=source_path,
+        )
 
     def track_tokens(self, metrics):
         """Accumulate token usage from a RunCompletedEvent.metrics."""
@@ -503,6 +568,8 @@ class Session:
             "plan_task": self.plan_task,
             "plan_steps": [s.to_dict() for s in self.plan_steps],
             "plan_mode": self.plan_mode,
+            "active_skill": self.active_skill,
+            "invoked_skills": {k: v.to_dict() for k, v in self.invoked_skills.items()},
             "model_ref": self.model_ref,
             "cwd": self.cwd,
             "created_at": self.created_at,
@@ -520,6 +587,15 @@ class Session:
         session.plan_task = data.get("plan_task")
         session.plan_steps = [PlanStep.from_dict(s) for s in data.get("plan_steps", [])]
         session.plan_mode = bool(data.get("plan_mode", False))
+        active = data.get("active_skill")
+        session.active_skill = str(active) if active else None
+        invoked = data.get("invoked_skills") or {}
+        if isinstance(invoked, dict):
+            session.invoked_skills = {
+                k: InvokedSkill.from_dict(v)
+                for k, v in invoked.items()
+                if isinstance(v, dict)
+            }
         # Support both new "model_ref" and legacy "model_key" for backward compat
         model_ref = data.get("model_ref")
         if not model_ref:

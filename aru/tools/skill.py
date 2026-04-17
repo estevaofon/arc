@@ -109,6 +109,12 @@ def invoke_skill(name: str, arguments: str = "") -> str:
     from aru.config import render_skill_template
     rendered = render_skill_template(skill.content or "", arguments or "")
 
+    # Record so the skill body survives compaction — mirror of claude-code's
+    # addInvokedSkill. We store the rendered content (post-argument substitution)
+    # so post-compact restoration matches what the model initially read.
+    if session is not None:
+        session.record_invoked_skill(cleaned, rendered, getattr(skill, "source_path", "") or "")
+
     args_display = arguments.strip() if arguments and arguments.strip() else "(none)"
     framed = (
         f"[Skill loaded: /{cleaned}]\n"

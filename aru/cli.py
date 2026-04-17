@@ -669,6 +669,11 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
                 else:
                     session.active_skill = cmd_name
                     prompt = render_skill_template(skill.content, cmd_args)
+                    # Record so the skill body survives compaction — mirror of
+                    # claude-code's addInvokedSkill. Store the rendered content
+                    # (post-argument substitution) so post-compact restoration
+                    # matches what the model initially read.
+                    session.record_invoked_skill(cmd_name, prompt, skill.source_path)
                     console.print(f"[bold magenta]Running skill /{cmd_name}...[/bold magenta]")
 
                     agent = await create_general_agent(session, config, env_context=_build_env_ctx())
