@@ -137,6 +137,52 @@ class TestInvokeSkillErrors:
         assert "Error: skill 'restricted' is marked disable_model_invocation" in result
         assert "secret" not in result  # body must NOT leak
 
+
+class TestInvokeSkillActiveSkill:
+    def test_sets_active_skill_on_success(self):
+        from aru.session import Session
+
+        session = Session()
+        get_ctx().session = session
+        assert session.active_skill is None
+
+        _set_config_with_skills({
+            "writing-plans": _make_skill("writing-plans", body="body"),
+        })
+
+        result = invoke_skill(name="writing-plans")
+        assert "[Skill loaded: /writing-plans]" in result
+        assert session.active_skill == "writing-plans"
+
+    def test_replaces_previously_active_skill(self):
+        from aru.session import Session
+
+        session = Session()
+        session.active_skill = "brainstorming"
+        get_ctx().session = session
+
+        _set_config_with_skills({
+            "writing-plans": _make_skill("writing-plans", body="body"),
+        })
+
+        invoke_skill(name="writing-plans")
+        assert session.active_skill == "writing-plans"
+
+    def test_leaves_active_skill_unchanged_on_error(self):
+        from aru.session import Session
+
+        session = Session()
+        session.active_skill = "brainstorming"
+        get_ctx().session = session
+
+        _set_config_with_skills({
+            "writing-plans": _make_skill("writing-plans", body="body"),
+        })
+
+        result = invoke_skill(name="nonexistent")
+        assert "Error: skill not found" in result
+        assert session.active_skill == "brainstorming"
+
     def test_disabled_skill_hidden_from_not_found_listing(self):
         _set_config_with_skills({
             "public": _make_skill("public", body="b"),

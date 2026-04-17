@@ -81,6 +81,32 @@ def _wrap_tools_with_hooks(tools: list) -> list:
                         f"exit_plan_mode(plan=<full plan text>) to request "
                         f"approval. Do NOT retry {tool_name}."
                     )
+            # Active-skill disallowed-tools gate — honors the `disallowed-tools`
+            # frontmatter field of the currently active skill. Mirrors the
+            # plan-mode gate pattern above; runs before plugin hooks so a skill
+            # can hard-block a tool regardless of permission/plugin state.
+            try:
+                from aru.runtime import get_ctx
+                ctx = get_ctx()
+                session = getattr(ctx, "session", None)
+                config = getattr(ctx, "config", None)
+            except (LookupError, AttributeError):
+                session = None
+                config = None
+            if session is not None and config is not None:
+                active = getattr(session, "active_skill", None)
+                skills = getattr(config, "skills", None) or {}
+                active_skill_obj = skills.get(active) if active else None
+                disallowed = getattr(active_skill_obj, "disallowed_tools", None) or []
+                if tool_name in disallowed:
+                    return (
+                        f"BLOCKED: tool `{tool_name}` is disallowed by the "
+                        f"currently active skill `{active}`. Read the skill's "
+                        f"SKILL.md for the prescribed path. Do NOT retry "
+                        f"`{tool_name}`; use the alternative the skill specifies "
+                        f"(commonly: write the output to a `.md` file via "
+                        f"`write_file` instead of using in-session state)."
+                    )
             # Before hook — plugins can mutate args or raise PermissionError to block
             try:
                 before_data = await _fire_hook("tool.execute.before", {

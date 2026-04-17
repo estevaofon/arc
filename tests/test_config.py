@@ -572,6 +572,22 @@ class TestParseSkillMetadata:
         result = _parse_skill_metadata({"allowed-tools": ""})
         assert result["allowed_tools"] == []
 
+    def test_disallowed_tools_comma_separated(self):
+        result = _parse_skill_metadata({"disallowed-tools": "enter_plan_mode, bash"})
+        assert result["disallowed_tools"] == ["enter_plan_mode", "bash"]
+
+    def test_disallowed_tools_list(self):
+        result = _parse_skill_metadata({"disallowed-tools": ["enter_plan_mode", "bash"]})
+        assert result["disallowed_tools"] == ["enter_plan_mode", "bash"]
+
+    def test_disallowed_tools_empty(self):
+        result = _parse_skill_metadata({"disallowed-tools": ""})
+        assert result["disallowed_tools"] == []
+
+    def test_disallowed_tools_missing(self):
+        result = _parse_skill_metadata({})
+        assert result["disallowed_tools"] == []
+
     def test_name_override(self):
         result = _parse_skill_metadata({"name": "my-custom-name"})
         assert result["name"] == "my-custom-name"

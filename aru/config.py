@@ -39,6 +39,7 @@ class Skill:
     content: str
     source_path: str
     allowed_tools: list[str] = field(default_factory=list)
+    disallowed_tools: list[str] = field(default_factory=list)
     disable_model_invocation: bool = False
     user_invocable: bool = True
     argument_hint: str = ""
@@ -266,6 +267,14 @@ def _parse_skill_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     else:
         result["allowed_tools"] = []
 
+    disallowed_raw = metadata.get("disallowed-tools", "")
+    if isinstance(disallowed_raw, list):
+        result["disallowed_tools"] = [str(t).strip() for t in disallowed_raw]
+    elif disallowed_raw:
+        result["disallowed_tools"] = [t.strip() for t in str(disallowed_raw).split(",") if t.strip()]
+    else:
+        result["disallowed_tools"] = []
+
     return result
 
 
@@ -382,6 +391,7 @@ def _discover_skills(search_roots: list[Path]) -> dict[str, Skill]:
                 content=body,
                 source_path=str(skill_file),
                 allowed_tools=meta["allowed_tools"],
+                disallowed_tools=meta["disallowed_tools"],
                 disable_model_invocation=meta["disable_model_invocation"],
                 user_invocable=meta["user_invocable"],
                 argument_hint=meta["argument_hint"],

@@ -177,6 +177,12 @@ class Session:
         # are blocked by the tool wrapper's gate. Set by enter_plan_mode,
         # cleared by exit_plan_mode approval, persists across turns.
         self.plan_mode: bool = False
+        # Currently active skill name, if any. Set by invoke_skill and by the
+        # CLI slash-command dispatcher when the user invokes /<skill>. Consulted
+        # by the tool wrapper in agent_factory to enforce `disallowed_tools`.
+        # Single slot: invoking a new skill replaces the previous one, matching
+        # the existing task_store.reset() replacement semantic in invoke_skill.
+        self.active_skill: str | None = None
         # Feedback from the last rejected plan (auto-approval flow or
         # exit_plan_mode). Injected into the next turn's plan reminder so
         # the agent sees the user's critique and revises. Cleared once

@@ -98,6 +98,13 @@ def invoke_skill(name: str, arguments: str = "") -> str:
         # the skill content will still be returned correctly.
         pass
 
+    # Mark this skill as active so the tool wrapper can enforce the skill's
+    # disallowed_tools list. Single-slot: replaces any previously active skill,
+    # mirroring the task_store.reset() above.
+    session = getattr(ctx, "session", None)
+    if session is not None:
+        session.active_skill = cleaned
+
     # Render the skill body with argument substitution (reuse existing helper)
     from aru.config import render_skill_template
     rendered = render_skill_template(skill.content or "", arguments or "")
