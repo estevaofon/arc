@@ -525,6 +525,58 @@ def would_prune(history: list[dict], model_id: str = "default") -> bool:
     return total_tool_chars >= protect_chars + PRUNE_MINIMUM_CHARS
 
 
+def _advance_split_past_tool_pairs(history: list[dict], split_idx: int) -> int:
+    """Move split_idx backward until no tool_result in recent is orphaned.
+
+    A tool_result block must travel with its matching tool_use block in
+    the same API request — Anthropic rejects a tool_result whose
+    tool_use_id is not declared by any tool_use in the conversation. If
+    the initial budget-based split falls between an assistant turn
+    (carrying tool_use) and the subsequent user turn (carrying
+    tool_result), the pair breaks: tool_use goes into `old` (and is
+    discarded when replaced by the summary), leaving tool_result
+    orphaned in `recent`.
+
+    This helper walks `split_idx` backward one index at a time until the
+    slice `history[split_idx:]` contains the matching tool_use for every
+    tool_result it holds. Matches opencode's invariant that pair
+    structure is never cut (compaction.ts does a mark-and-replace on the
+    tool output, but never removes either block).
+
+    O(n²) in the worst case, but n is bounded by history length and the
+    inner scan is only over the tail; on real sessions the loop ends in
+    1-2 iterations or not at all.
+    """
+    from aru.history_blocks import is_tool_result, tool_use_ids_in_item
+
+    while split_idx > 0:
+        # All tool_use ids present in the recent slice
+        declared: set[str] = set()
+        for msg in history[split_idx:]:
+            if msg.get("role") == "assistant":
+                declared.update(tool_use_ids_in_item(msg))
+
+        orphaned = False
+        for msg in history[split_idx:]:
+            if msg.get("role") != "user":
+                continue
+            for block in (msg.get("content") or []):
+                if not is_tool_result(block):
+                    continue
+                tid = block.get("tool_use_id")
+                if tid and tid not in declared:
+                    orphaned = True
+                    break
+            if orphaned:
+                break
+
+        if not orphaned:
+            return split_idx
+        split_idx -= 1
+
+    return split_idx
+
+
 def _split_history(history: list[dict], model_id: str = "default") -> tuple[list[dict], list[dict]]:
     """Split history into old (to summarize) and recent (to keep intact).
 
@@ -541,6 +593,12 @@ def _split_history(history: list[dict], model_id: str = "default") -> tuple[list
     of the summary, but keeping it in recent too means the agent can
     quote it verbatim afterward.
 
+    The split point is then walked backward (via
+    `_advance_split_past_tool_pairs`) to guarantee every tool_result in
+    `recent` has its matching tool_use in `recent`. Without that
+    invariant, a naive budget split can orphan a tool_result whose
+    tool_use landed in `old` — the API rejects such requests.
+
     The `model_id` parameter is retained for signature compatibility;
     the recent budget is a flat value not scaled by model context.
     """
@@ -555,6 +613,10 @@ def _split_history(history: list[dict], model_id: str = "default") -> tuple[list
             split_idx = i
         else:
             break
+
+    # Pair-safety: never let a tool_result in `recent` reference a tool_use
+    # that was discarded into `old`. Walks split_idx backward as needed.
+    split_idx = _advance_split_past_tool_pairs(history, split_idx)
 
     # Defensive: force the first user turn into `recent` even if the
     # protect budget would have sent it to `old`. The original ask is

@@ -398,12 +398,59 @@ class TestApplyCompaction:
             {"role": "assistant", "content": "Recent response"},
         ]
         summary = "Summary of old conversation"
-        
+
         all_messages = old_messages + recent
         result = apply_compaction(all_messages, summary)
-        
+
         # Recent messages should be in result
         assert "Recent request" in str(result)
+
+    def test_tool_use_and_tool_result_pair_never_split(self):
+        """Scenario 6 fix: a tool_use block and its matching tool_result
+        must end up on the same side of the split. A naive budget split
+        would put the assistant turn carrying tool_use into `old` and the
+        subsequent user turn carrying tool_result into `recent`, leaving
+        the API with an orphan tool_result_id. The pair-safety walk in
+        _split_history prevents this."""
+        from aru.history_blocks import text_block, tool_use_block, tool_result_block
+        import aru.context as ctx
+
+        # Build a history where a tool_use/tool_result pair sits exactly at
+        # a naive split boundary. We pad the "old" side with a lot of text
+        # so the initial budget calc puts everything before the pair into
+        # `old`, and the pair would be the first thing after the boundary.
+        big_old_text = "x" * (ctx.COMPACT_RECENT_CHARS + 10_000)
+        history = [
+            {"role": "user", "content": [text_block(big_old_text)]},
+            {"role": "assistant", "content": [
+                text_block("I'll run a command."),
+                tool_use_block("call-42", "bash", {"cmd": "ls"}),
+            ]},
+            {"role": "user", "content": [
+                tool_result_block("call-42", "a\nb\n"),
+            ]},
+            {"role": "assistant", "content": [text_block("Done.")]},
+        ]
+
+        old, recent = ctx._split_history(history)
+
+        # Collect tool_use ids declared in recent
+        from aru.history_blocks import is_tool_use, is_tool_result
+        declared_in_recent = set()
+        for msg in recent:
+            for block in (msg.get("content") or []):
+                if is_tool_use(block):
+                    declared_in_recent.add(block.get("id"))
+
+        # Every tool_result in recent must have its matching tool_use there
+        for msg in recent:
+            for block in (msg.get("content") or []):
+                if is_tool_result(block):
+                    tid = block.get("tool_use_id")
+                    assert tid in declared_in_recent, (
+                        f"tool_result id={tid} orphaned in recent: "
+                        f"declared ids = {declared_in_recent}"
+                    )
 
 
 class TestFormatContextBlock:
