@@ -711,13 +711,16 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
                 if not skill.user_invocable:
                     console.print(f"[yellow]Skill '{cmd_name}' is not user-invocable[/yellow]")
                 else:
-                    session.active_skill = cmd_name
+                    # Slash-invoked skills always run under the primary agent
+                    # scope (agent_id=None). Subagents reach skills via the
+                    # invoke_skill tool, which keys by ctx.agent_id instead.
+                    session.set_active_skill(None, cmd_name)
                     prompt = render_skill_template(skill.content, cmd_args)
                     # Record so the skill body survives compaction — mirror of
                     # claude-code's addInvokedSkill. Store the rendered content
                     # (post-argument substitution) so post-compact restoration
                     # matches what the model initially read.
-                    session.record_invoked_skill(cmd_name, prompt, skill.source_path)
+                    session.record_invoked_skill(cmd_name, prompt, skill.source_path, agent_id=None)
                     console.print(f"[bold magenta]Running skill /{cmd_name}...[/bold magenta]")
 
                     agent = await create_general_agent(session, config, env_context=_build_env_ctx())

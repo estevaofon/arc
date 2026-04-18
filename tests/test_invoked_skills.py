@@ -31,6 +31,18 @@ from aru.session import InvokedSkill, Session
 # ── Session.record_invoked_skill ──────────────────────────────────
 
 
+def _names_in(session: Session) -> set[str]:
+    """Extract the set of skill names from invoked_skills, ignoring agent
+    scope. Used by tests that pre-date the agent_id-keyed storage."""
+    return {v.name for v in session.invoked_skills.values()}
+
+
+def _get_by_name(session: Session, skill_name: str, agent_id: str | None = None):
+    """Look up a single InvokedSkill by name + agent scope."""
+    key = Session._invoked_key(agent_id, skill_name)
+    return session.invoked_skills[key]
+
+
 class TestRecordInvokedSkill:
     def test_records_name_content_and_path(self):
         session = Session()
@@ -40,22 +52,23 @@ class TestRecordInvokedSkill:
             source_path="/fake/brainstorming/SKILL.md",
         )
 
-        assert "brainstorming" in session.invoked_skills
-        entry = session.invoked_skills["brainstorming"]
+        assert "brainstorming" in _names_in(session)
+        entry = _get_by_name(session, "brainstorming")
         assert entry.name == "brainstorming"
         assert entry.content == "# Body\nRules here"
         assert entry.source_path == "/fake/brainstorming/SKILL.md"
         assert entry.invoked_at > 0
+        assert entry.agent_id is None  # primary scope
 
     def test_re_invocation_overwrites_content(self):
         session = Session()
         session.record_invoked_skill("s", "v1", source_path="p")
-        old_ts = session.invoked_skills["s"].invoked_at
+        old_ts = _get_by_name(session, "s").invoked_at
         # Advance the monotonic clock enough for time.time() to tick
         time.sleep(0.01)
         session.record_invoked_skill("s", "v2", source_path="p2")
 
-        entry = session.invoked_skills["s"]
+        entry = _get_by_name(session, "s")
         assert entry.content == "v2"
         assert entry.source_path == "p2"
         assert entry.invoked_at >= old_ts
@@ -71,7 +84,21 @@ class TestRecordInvokedSkill:
         session.record_invoked_skill("b", "body-b")
         session.record_invoked_skill("c", "body-c")
 
-        assert set(session.invoked_skills) == {"a", "b", "c"}
+        assert _names_in(session) == {"a", "b", "c"}
+
+    def test_subagent_scope_does_not_shadow_primary(self):
+        """Scenario 3 fix: a subagent invoking the same skill name as the
+        primary agent records a separate entry; neither overwrites the other."""
+        session = Session()
+        session.record_invoked_skill("brainstorming", "primary-body", agent_id=None)
+        session.record_invoked_skill("brainstorming", "sub-body", agent_id="subagent-xyz")
+
+        primary = session.get_invoked_skills_for_agent(None)
+        sub = session.get_invoked_skills_for_agent("subagent-xyz")
+        assert len(primary) == 1
+        assert len(sub) == 1
+        assert next(iter(primary.values())).content == "primary-body"
+        assert next(iter(sub.values())).content == "sub-body"
 
 
 class TestInvokedSkillSerialization:
@@ -82,14 +109,39 @@ class TestInvokedSkillSerialization:
 
         dumped = session.to_dict()
         assert "invoked_skills" in dumped
-        assert set(dumped["invoked_skills"]) == {"brainstorming", "writing-plans"}
+        assert _names_in(Session.from_dict(dumped)) == {"brainstorming", "writing-plans"}
 
         restored = Session.from_dict(dumped)
-        assert set(restored.invoked_skills) == {"brainstorming", "writing-plans"}
-        b = restored.invoked_skills["brainstorming"]
+        assert _names_in(restored) == {"brainstorming", "writing-plans"}
+        b = _get_by_name(restored, "brainstorming")
         assert b.content == "body-1"
         assert b.source_path == "/p/1"
         assert isinstance(b, InvokedSkill)
+
+    def test_legacy_invoked_skills_bare_name_key_migrates_to_primary_scope(self):
+        """A pre-C3 session stored invoked_skills keyed by bare skill name
+        with no agent_id on the record. On load we migrate those to the
+        primary (None) scope so compaction continues to replay them."""
+        legacy_payload = {
+            "session_id": "x",
+            "history": [],
+            "invoked_skills": {
+                "brainstorming": {
+                    "name": "brainstorming",
+                    "content": "legacy body",
+                    "source_path": "",
+                    "invoked_at": 123.0,
+                    # note: no agent_id in pre-C3 payloads
+                },
+            },
+        }
+        restored = Session.from_dict(legacy_payload)
+        primary = restored.get_invoked_skills_for_agent(None)
+        assert len(primary) == 1
+        recovered = next(iter(primary.values()))
+        assert recovered.name == "brainstorming"
+        assert recovered.content == "legacy body"
+        assert recovered.agent_id is None
 
     def test_from_dict_tolerates_missing_field(self):
         """Old sessions (pre-feature) won't have invoked_skills in JSON."""

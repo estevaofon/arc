@@ -101,3 +101,50 @@ def test_exit_plan_mode_is_always_allowed_even_if_disallowed_by_skill():
 
     assert result == "plan exited"
     assert "BLOCKED" not in result
+
+
+def test_subagent_does_not_inherit_parent_active_skill():
+    """Scenario 3 fix: a subagent running with its own agent_id must not be
+    subject to disallowed_tools from a skill the PARENT had active. Skills
+    are keyed per agent scope via session.active_skills."""
+    skill = Skill(
+        name="writing-plans",
+        description="",
+        content="",
+        source_path="/fake",
+        disallowed_tools=["enter_plan_mode"],
+    )
+    _setup_ctx("writing-plans", {"writing-plans": skill})
+
+    # Flip the runtime into a subagent scope — emulates fork_ctx() having
+    # assigned a fresh agent_id. With C3 the gate must look up the active
+    # skill for THIS scope (None) and find nothing.
+    ctx = get_ctx()
+    ctx.agent_id = "subagent-test"
+
+    wrapped = _wrap_tools_with_hooks([enter_plan_mode])[0]
+    result = _run(wrapped())
+
+    # No BLOCKED because the subagent scope has no active skill.
+    assert result == "plan mode entered"
+
+
+def test_primary_gate_still_fires_when_subagent_scope_is_unrelated():
+    """Dual of the previous test: switching ctx.agent_id away from None must
+    not accidentally DISABLE the gate for the primary scope. Re-pinning to
+    None (primary) must re-enable the gate with the same skill config."""
+    skill = Skill(
+        name="writing-plans",
+        description="",
+        content="",
+        source_path="/fake",
+        disallowed_tools=["enter_plan_mode"],
+    )
+    _setup_ctx("writing-plans", {"writing-plans": skill})
+
+    ctx = get_ctx()
+    ctx.agent_id = None  # explicit primary
+
+    wrapped = _wrap_tools_with_hooks([enter_plan_mode])[0]
+    result = _run(wrapped())
+    assert "BLOCKED" in result

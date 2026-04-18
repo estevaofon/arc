@@ -99,11 +99,14 @@ def invoke_skill(name: str, arguments: str = "") -> str:
         pass
 
     # Mark this skill as active so the tool wrapper can enforce the skill's
-    # disallowed_tools list. Single-slot: replaces any previously active skill,
-    # mirroring the task_store.reset() above.
+    # disallowed_tools list. Scoped by ctx.agent_id — a subagent invoking a
+    # skill does NOT change the primary agent's active-skill slot, and
+    # vice versa. Mirrors claude-code's composite `${agentId}:${skillName}`
+    # keying (state.ts:1516).
     session = getattr(ctx, "session", None)
+    agent_id = getattr(ctx, "agent_id", None)
     if session is not None:
-        session.active_skill = cleaned
+        session.set_active_skill(agent_id, cleaned)
 
     # Render the skill body with argument substitution (reuse existing helper)
     from aru.config import render_skill_template
@@ -113,7 +116,10 @@ def invoke_skill(name: str, arguments: str = "") -> str:
     # addInvokedSkill. We store the rendered content (post-argument substitution)
     # so post-compact restoration matches what the model initially read.
     if session is not None:
-        session.record_invoked_skill(cleaned, rendered, getattr(skill, "source_path", "") or "")
+        session.record_invoked_skill(
+            cleaned, rendered, getattr(skill, "source_path", "") or "",
+            agent_id=agent_id,
+        )
 
     args_display = arguments.strip() if arguments and arguments.strip() else "(none)"
     framed = (

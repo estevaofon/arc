@@ -755,10 +755,13 @@ async def run_agent_capture(agent, message: str, session=None, lightweight: bool
                 with Status("[dim]Compacting context...[/dim]", console=console, spinner="dots"):
                     try:
                         session.history = prune_history(session.history, model_id=session.model_id)
+                        # Only the primary agent's invoked skills get replayed
+                        # after compaction here — subagents have their own
+                        # compaction flow and carry their own agent_id.
                         session.history = await compact_conversation(
                             session.history, session.model_ref, session.plan_task,
                             model_id=session.model_id,
-                            invoked_skills=session.invoked_skills,
+                            invoked_skills=session.get_invoked_skills_for_agent(None),
                         )
                         console.print("[dim]Context compacted to save tokens.[/dim]")
                     except Exception:

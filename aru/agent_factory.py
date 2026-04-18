@@ -94,7 +94,15 @@ def _wrap_tools_with_hooks(tools: list) -> list:
                 session = None
                 config = None
             if session is not None and config is not None:
-                active = getattr(session, "active_skill", None)
+                # active_skill is keyed by agent scope — a subagent (ctx with
+                # a non-None agent_id) does not inherit the parent's active
+                # skill. Primary agent sees active_skills[None].
+                agent_id = getattr(ctx, "agent_id", None)
+                get_active = getattr(session, "get_active_skill", None)
+                if callable(get_active):
+                    active = get_active(agent_id)
+                else:  # legacy Session without scoped helper
+                    active = getattr(session, "active_skill", None)
                 skills = getattr(config, "skills", None) or {}
                 active_skill_obj = skills.get(active) if active else None
                 disallowed = getattr(active_skill_obj, "disallowed_tools", None) or []

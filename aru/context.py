@@ -792,15 +792,22 @@ async def compact_conversation(
         pass  # no plugin manager available — proceed without hooks
 
     # Best-effort: if caller didn't pass invoked_skills but there's a session
-    # in the current runtime context, use its record. Keeps legacy call sites
-    # (subagent compaction, tests) covered without forcing every caller to
-    # plumb the session through.
+    # in the current runtime context, pull just this agent's slice. Keeps
+    # legacy call sites (subagent compaction, tests) covered without forcing
+    # every caller to plumb the session through. Filtering by agent_id means
+    # a subagent's compaction doesn't replay primary-scope skills and vice
+    # versa.
     if invoked_skills is None:
         try:
             from aru.runtime import get_ctx
-            session = getattr(get_ctx(), "session", None)
+            ctx = get_ctx()
+            session = getattr(ctx, "session", None)
             if session is not None:
-                invoked_skills = getattr(session, "invoked_skills", None)
+                getter = getattr(session, "get_invoked_skills_for_agent", None)
+                if callable(getter):
+                    invoked_skills = getter(getattr(ctx, "agent_id", None))
+                else:
+                    invoked_skills = getattr(session, "invoked_skills", None)
         except (LookupError, AttributeError, ImportError):
             pass
 

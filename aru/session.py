@@ -77,13 +77,20 @@ class InvokedSkill:
         invoked_at: Unix timestamp (seconds) — used to sort by recency
             when multiple skills were invoked and the preservation
             budget must drop some.
+        agent_id: Scope identifier — which agent invoked the skill. None
+            means the primary (top-level) agent. Subagents have a
+            unique id set by `fork_ctx()`. Mirrors claude-code's
+            `agentId` on `InvokedSkillInfo` so a subagent's invoked
+            skills don't bleed into the parent's compaction.
     """
 
-    def __init__(self, name: str, content: str, source_path: str = "", invoked_at: float | None = None):
+    def __init__(self, name: str, content: str, source_path: str = "",
+                 invoked_at: float | None = None, agent_id: str | None = None):
         self.name = name
         self.content = content
         self.source_path = source_path
         self.invoked_at = time.time() if invoked_at is None else invoked_at
+        self.agent_id = agent_id
 
     def to_dict(self) -> dict:
         return {
@@ -91,15 +98,18 @@ class InvokedSkill:
             "content": self.content,
             "source_path": self.source_path,
             "invoked_at": self.invoked_at,
+            "agent_id": self.agent_id,
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> "InvokedSkill":
+        raw_agent = data.get("agent_id")
         return cls(
             name=str(data.get("name", "")),
             content=str(data.get("content", "")),
             source_path=str(data.get("source_path", "")),
             invoked_at=float(data.get("invoked_at") or time.time()),
+            agent_id=str(raw_agent) if raw_agent else None,
         )
 
 
@@ -220,18 +230,21 @@ class Session:
         # are blocked by the tool wrapper's gate. Set by enter_plan_mode,
         # cleared by exit_plan_mode approval, persists across turns.
         self.plan_mode: bool = False
-        # Currently active skill name, if any. Set by invoke_skill and by the
-        # CLI slash-command dispatcher when the user invokes /<skill>. Consulted
-        # by the tool wrapper in agent_factory to enforce `disallowed_tools`.
-        # Single slot: invoking a new skill replaces the previous one, matching
-        # the existing task_store.reset() replacement semantic in invoke_skill.
-        self.active_skill: str | None = None
-        # All skills invoked in this session, keyed by name. Grows as skills are
-        # invoked; never shrinks during a session (claude-code parity — the
-        # skill's guidelines remain relevant even after moving to the next skill
-        # in a multi-skill workflow, e.g. brainstorming → writing-plans). Used
-        # by compaction to preserve skill bodies via `<system-reminder>`
-        # attachment when the summary would otherwise drop them from history.
+        # Currently active skill name per agent scope. Keyed by agent_id;
+        # None-key is the primary (top-level) agent. Set by invoke_skill and
+        # by the CLI slash-command dispatcher. Consulted by the tool wrapper
+        # in agent_factory to enforce `disallowed_tools`. Single slot per
+        # agent scope: invoking a new skill replaces the previous one for
+        # that agent. Keying by agent_id means a subagent does not inherit
+        # its parent's active skill — claude-code parity (STATE.invokedSkills
+        # composite keying, state.ts:1516).
+        self.active_skills: dict[str | None, str] = {}
+        # All skills invoked in this session, keyed by "<agent_id>:<name>"
+        # (empty agent_id for primary). Grows as skills are invoked; never
+        # shrinks during a session. Used by compaction to preserve skill
+        # bodies via `<system-reminder>` attachment. Keying includes agent_id
+        # so a subagent's invocations stay out of the parent's compaction
+        # (claude-code parity — state.ts:1516).
         self.invoked_skills: dict[str, InvokedSkill] = {}
         # Feedback from the last rejected plan (auto-approval flow or
         # exit_plan_mode). Injected into the next turn's plan reminder so
@@ -320,19 +333,72 @@ class Session:
         # clear without a replacement still flushes any stale queued state.
         self._plan_render_pending = False
 
-    def record_invoked_skill(self, name: str, content: str, source_path: str = "") -> None:
+    # --- Active skill helpers (scoped by agent_id) ----------------------
+
+    @staticmethod
+    def _invoked_key(agent_id: str | None, name: str) -> str:
+        """Composite key for invoked_skills (empty agent_id = primary)."""
+        return f"{agent_id or ''}:{name}"
+
+    @property
+    def active_skill(self) -> str | None:
+        """Backward-compat alias: the primary agent's active skill.
+
+        Prefer `get_active_skill(agent_id)` / `set_active_skill(...)` in new
+        code. This property shadows the pre-C3 single-slot attribute so
+        callers and tests that read `session.active_skill` keep working and
+        always refer to the top-level agent's slot.
+        """
+        return self.active_skills.get(None)
+
+    @active_skill.setter
+    def active_skill(self, value: str | None) -> None:
+        self.set_active_skill(None, value)
+
+    def get_active_skill(self, agent_id: str | None = None) -> str | None:
+        """Return the currently active skill for a given agent scope.
+
+        `agent_id=None` is the primary (top-level) agent. Subagents should
+        pass their own `ctx.agent_id`.
+        """
+        return self.active_skills.get(agent_id)
+
+    def set_active_skill(self, agent_id: str | None, name: str | None) -> None:
+        """Set (or clear, when name is None) the active skill for a scope."""
+        if name:
+            self.active_skills[agent_id] = name
+        else:
+            self.active_skills.pop(agent_id, None)
+
+    def get_invoked_skills_for_agent(
+        self, agent_id: str | None = None
+    ) -> dict[str, "InvokedSkill"]:
+        """Return invoked-skill records belonging to a specific agent scope.
+
+        Filters the flat `invoked_skills` dict so compaction at the primary
+        scope doesn't replay subagent-invoked skills, and vice versa.
+        """
+        return {
+            k: v for k, v in self.invoked_skills.items() if v.agent_id == agent_id
+        }
+
+    def record_invoked_skill(self, name: str, content: str, source_path: str = "",
+                             agent_id: str | None = None) -> None:
         """Register a skill invocation so its body survives compaction.
 
         Called by the CLI slash-command dispatcher and by the `invoke_skill`
-        tool. Re-invoking the same skill refreshes `invoked_at` and overwrites
-        the stored content (useful if the SKILL.md was edited mid-session).
+        tool. Re-invoking the same skill (in the same agent scope) refreshes
+        `invoked_at` and overwrites the stored content (useful if the
+        SKILL.md was edited mid-session).
         """
         if not name:
             return
-        self.invoked_skills[name] = InvokedSkill(
+        key = self._invoked_key(agent_id, name)
+        self.invoked_skills[key] = InvokedSkill(
             name=name,
             content=content,
             source_path=source_path,
+            agent_id=agent_id,
         )
 
     def track_tokens(self, metrics):
@@ -561,6 +627,9 @@ class Session:
         return removed
 
     def to_dict(self) -> dict:
+        # active_skills serialized with empty-string for the primary (None)
+        # agent_id so the JSON stays well-formed. Same convention used by
+        # the invoked_skills composite key.
         return {
             "session_id": self.session_id,
             "history": self.history,
@@ -568,7 +637,9 @@ class Session:
             "plan_task": self.plan_task,
             "plan_steps": [s.to_dict() for s in self.plan_steps],
             "plan_mode": self.plan_mode,
-            "active_skill": self.active_skill,
+            "active_skills": {
+                ("" if k is None else str(k)): v for k, v in self.active_skills.items()
+            },
             "invoked_skills": {k: v.to_dict() for k, v in self.invoked_skills.items()},
             "model_ref": self.model_ref,
             "cwd": self.cwd,
@@ -587,15 +658,38 @@ class Session:
         session.plan_task = data.get("plan_task")
         session.plan_steps = [PlanStep.from_dict(s) for s in data.get("plan_steps", [])]
         session.plan_mode = bool(data.get("plan_mode", False))
-        active = data.get("active_skill")
-        session.active_skill = str(active) if active else None
+
+        # active_skills: prefer the scoped dict, fall back to the legacy
+        # single-slot "active_skill" string. Legacy values migrate to the
+        # primary (None) slot.
+        scoped = data.get("active_skills")
+        if isinstance(scoped, dict):
+            session.active_skills = {
+                (None if k == "" else str(k)): str(v)
+                for k, v in scoped.items()
+                if v
+            }
+        else:
+            legacy_active = data.get("active_skill")
+            if legacy_active:
+                session.active_skills = {None: str(legacy_active)}
+
         invoked = data.get("invoked_skills") or {}
         if isinstance(invoked, dict):
-            session.invoked_skills = {
-                k: InvokedSkill.from_dict(v)
-                for k, v in invoked.items()
-                if isinstance(v, dict)
-            }
+            parsed: dict[str, InvokedSkill] = {}
+            for k, v in invoked.items():
+                if not isinstance(v, dict):
+                    continue
+                skill = InvokedSkill.from_dict(v)
+                # Legacy sessions keyed by bare skill name with no agent_id
+                # stored on the record. Treat them as primary-scope so they
+                # continue to show up for the primary agent's compaction.
+                if ":" not in str(k):
+                    key = cls._invoked_key(None, skill.name)
+                    parsed[key] = skill
+                else:
+                    parsed[str(k)] = skill
+            session.invoked_skills = parsed
         # Support both new "model_ref" and legacy "model_key" for backward compat
         model_ref = data.get("model_ref")
         if not model_ref:
