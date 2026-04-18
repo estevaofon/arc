@@ -71,7 +71,7 @@ aru/
 
 - **`cli.py`**: Entry point (`run_cli()`, `run_oneshot()`), main async REPL loop, argument parsing, non-interactive mode
 - **`agent_factory.py`**: `create_agent_from_spec(AgentSpec, ...)` — builds Agno `Agent` from a catalog spec, wires tools, permissions, hooks
-- **`runtime.py`**: `RuntimeContext` held in `contextvars`; `fork_ctx()` clones for sub-agents with fresh task store and read cache
+- **`runtime.py`**: `RuntimeContext` held in `contextvars`; `fork_ctx()` clones for sub-agents with fresh task store, fresh read cache, and a unique `agent_id` used by per-scope state (active skills, invoked skills) so subagents do not inherit the parent's skill context
 - **`runner.py`**: Agent execution orchestration with live streaming and plan step tracking
 - **`session.py`**: Session state (conversation history, plan tracking, model selection, token metrics). Persisted as JSON in `.aru/sessions/`
 - **`commands.py`**: Slash command definitions, help display, shell execution, user prompts
@@ -95,7 +95,11 @@ Abstracts model creation across Anthropic, OpenAI, Ollama, Groq, OpenRouter, Dee
 
 ### `permissions.py` — Permission System
 
-Granular per-tool rules with three outcomes: `allow`, `ask`, `deny`. Configured in `aru.json` under `permission` with per-category patterns. Safe command prefixes whitelist ~40 read-only shell commands as defaults. Sensitive files (`*.env`) denied by default.
+Granular per-tool rules with three outcomes: `allow`, `ask`, `deny`. Configured in `aru.json` under `permission` with per-category patterns. Safe command prefixes whitelist ~40 read-only shell commands as defaults. Sensitive files (`*.env`) denied by default. Before applying rules, `resolve_permission` consults `tool_policy.evaluate_tool_policy` so plan-mode / active-skill denials are seen by both the wrapper and the user-prompt path.
+
+### `tool_policy.py` — Unified Tool-Policy Gate
+
+`evaluate_tool_policy(tool_name) -> PolicyDecision` is the single decision point for whether a tool call proceeds. Called by the tool wrapper and by `resolve_permission`. Composes three rule sources: `ALWAYS_ALLOWED_TOOLS` (e.g. `exit_plan_mode` — never denied), plan mode (`PLAN_MODE_BLOCKED_TOOLS`), and the active skill's `disallowed_tools` keyed by `ctx.agent_id`. When multiple rules fire, the message combines them into one BLOCKED string — avoiding the sequential-contradictory-advice bug the old parallel gates produced.
 
 ### `agents/catalog.py` — Agent Catalog
 
@@ -163,7 +167,7 @@ The tool is part of `GENERAL_TOOLS` / `EXECUTOR_TOOLS` but intentionally exclude
 
 ### `tools/tasklist.py` / `tools/plan_mode.py`
 
-Tasklist tracks per-step subtasks during executor runs. `enter_plan_mode` / `exit_plan_mode` are a paired flag-flip — `enter_plan_mode` only sets `session.plan_mode = True` (no nested runner), which makes the tool wrapper in `agent_factory._wrap_tools_with_hooks` short-circuit `_PLAN_MODE_BLOCKED_TOOLS` (edit/write/bash/delegate_task) with a BLOCKED error. The build agent stays in the same loop, writes the plan as its next assistant message, then calls `exit_plan_mode(plan=...)` which shows the approval panel and flips the flag back on approval. Read-only tools (read/grep/glob/list/web_*) pass through plan mode so the agent can still research. The `/plan` slash command is a separate, user-initiated path that still runs the planner agent directly via `runner.prompt` — safe because it's not invoked from inside another tool's Live context.
+Tasklist tracks per-step subtasks during executor runs. `enter_plan_mode` / `exit_plan_mode` are a paired flag-flip — `enter_plan_mode` only sets `session.plan_mode = True` (no nested runner). The `tool_policy.py` gate then denies `PLAN_MODE_BLOCKED_TOOLS` (edit/write/bash/delegate_task) with a BLOCKED message. The build agent stays in the same loop, writes the plan as its next assistant message, then calls `exit_plan_mode(plan=...)` which shows the approval panel and flips the flag back on approval. Read-only tools pass through plan mode so the agent can still research. The `/plan` slash command is a separate, user-initiated path that runs the planner agent directly via `runner.prompt`.
 
 ### `tools/mcp_client.py` — MCP Gateway
 
