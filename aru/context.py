@@ -38,6 +38,28 @@ PRUNE_PROTECTED_MARKERS = {"[SubAgent-", "delegate_task"}
 # These are checked as substrings in message content (tool results include the tool name)
 PRUNE_PROTECTED_TOOLS = {"delegate_task"}
 
+# Tools whose outputs are safe to clear via mid-turn micro-compaction.
+# Mirrors claude-code's COMPACTABLE_TOOLS in microCompact.ts: only outputs that
+# the model can re-derive (file reads, shell commands, searches, fetches) or
+# that have no semantic value once consumed (edit/write confirmations) are
+# allowed to be wiped. Anything stateful or hard to reproduce —
+# `delegate_task` (subagent reasoning), `invoke_skill` (skill body), tasklist
+# tools (mutate session state), plan_mode toggles — must NOT appear here.
+#
+# Single source of truth: cache_patch._prune_tool_messages reads this list to
+# decide which tool_result blocks are eligible for content-clearing during the
+# pre-API-call prune pass.
+COMPACTABLE_TOOLS = frozenset({
+    "read_file", "read_files",
+    "write_file", "write_files",
+    "edit_file", "edit_files",
+    "glob_search", "grep_search", "list_directory",
+    "bash", "run_command",
+    "web_search", "web_fetch",
+    "rank_files",
+    "get_project_tree",
+})
+
 # Truncation: universal limits for any tool output
 TRUNCATE_MAX_LINES = 300
 TRUNCATE_MAX_BYTES = 15 * 1024  # 15 KB

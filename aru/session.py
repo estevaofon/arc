@@ -510,6 +510,24 @@ class Session:
             pct = int(total / self.token_budget * 100)
             lines.append(f"")
             lines.append(f"Budget: {pct}% used")
+
+        # Micro-compaction stats: shown when the pre-API-call prune actually
+        # fired. Useful for understanding whether the budget threshold is set
+        # right — if results_cleared stays at 0 across long sessions, the
+        # protect window is generous enough that prune never trips.
+        try:
+            from aru.cache_patch import get_microcompact_stats
+            mc = get_microcompact_stats()
+            if mc["results_cleared"] > 0 or mc.get("overflow_recoveries", 0) > 0:
+                lines.append(f"")
+                lines.append(f"Micro-compaction (process-wide):")
+                lines.append(f"  invocations:     {mc['invocations']:,}")
+                lines.append(f"  clear passes:    {mc['clear_passes']:,}")
+                lines.append(f"  results cleared: {mc['results_cleared']:,}")
+                if mc.get("overflow_recoveries", 0) > 0:
+                    lines.append(f"  overflow saves:  {mc['overflow_recoveries']:,}")
+        except Exception:
+            pass
         return "\n".join(lines)
 
     def invalidate_context_cache(self):
