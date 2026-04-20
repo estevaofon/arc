@@ -28,7 +28,13 @@ from aru.tools.shell import bash
 from aru.tools.skill import invoke_skill
 from aru.tools.tasklist import create_task_list, update_plan_step, update_task
 from aru.tools.apply_patch import apply_patch
-from aru.tools.lsp import lsp_definition, lsp_diagnostics, lsp_hover, lsp_references
+from aru.tools.lsp import (
+    lsp_definition,
+    lsp_diagnostics,
+    lsp_hover,
+    lsp_references,
+    lsp_rename,
+)
 from aru.tools.memory_tool import memory_search
 from aru.tools.web import web_fetch, web_search
 from aru.tools.worktree import worktree_info
@@ -58,6 +64,7 @@ _WRITE_TOOLS = [
     _edit_file_tool,
     _edit_files_tool,
     apply_patch,
+    lsp_rename,
 ]
 
 _NET_TOOLS = [web_search, web_fetch]

@@ -8,11 +8,14 @@ strings rather than raises — the model can fall back to grep-based tools.
 
 from __future__ import annotations
 
+import logging
 import os
 
 from aru.lsp.client import LspRequestError
 from aru.lsp.manager import get_lsp_manager
-from aru.lsp.protocol import Location, Position, path_to_uri
+from aru.lsp.protocol import Location, Position, path_to_uri, uri_to_path
+
+logger = logging.getLogger("aru.lsp")
 
 
 async def _ensure_doc(client, path: str) -> tuple[str, str]:
@@ -133,6 +136,225 @@ async def lsp_hover(file_path: str, line: int, column: int) -> str:
                 pieces.append(str(c))
         return "\n".join(p for p in pieces if p).strip() or "No hover info."
     return str(contents).strip()
+
+
+# ── Rename code action (Tier 3 #4) ──────────────────────────────────
+
+async def lsp_rename(file_path: str, line: int, column: int, new_name: str) -> str:
+    """Rename the symbol at file:line:column (0-indexed) across the workspace.
+
+    Uses the LSP ``textDocument/rename`` code action. The server returns a
+    WorkspaceEdit describing every file to touch; this tool applies it
+    atomically with in-memory rollback — if any file write fails, already-
+    applied files are restored before the error is surfaced.
+
+    Supports both the simple ``changes`` format (used by pylsp) and the
+    richer ``documentChanges`` format (used by typescript-language-server).
+    ``documentChanges`` entries that are CreateFile / DeleteFile /
+    RenameFile operations are logged and skipped — only TextDocumentEdit
+    is applied, which covers symbol rename.
+
+    Args:
+        file_path: Absolute or ``ctx.cwd``-relative path of the file
+            containing the symbol to rename.
+        line: 0-indexed line of the symbol occurrence to anchor on.
+        column: 0-indexed column of the symbol occurrence.
+        new_name: New identifier. Must be a valid name for the language —
+            if the server rejects it (reserved word, invalid characters)
+            the error message comes back as a string.
+    """
+    mgr = get_lsp_manager()
+    if mgr is None:
+        return "[LSP not configured. Add an \"lsp\" section to aru.json.]"
+    client = await mgr.get_client_for(file_path)
+    if client is None:
+        health = mgr.health.get(mgr.language_for_file(file_path) or "")
+        if health and health.state == "failed":
+            return f"[LSP server unavailable: {health.last_error}]"
+        return f"[LSP not configured for {file_path}]"
+    try:
+        uri, _ = await _ensure_doc(client, file_path)
+    except LspRequestError as exc:
+        return f"[LSP error: {exc}]"
+    try:
+        edit = await client.request("textDocument/rename", {
+            "textDocument": {"uri": uri},
+            "position": Position(line, column).to_wire(),
+            "newName": new_name,
+        })
+    except LspRequestError as exc:
+        return f"[LSP error: {exc}]"
+    if edit is None:
+        return "No rename possible at that position."
+
+    try:
+        per_file_edits, skipped = _normalize_workspace_edit(edit)
+    except ValueError as exc:
+        return f"[Unsupported WorkspaceEdit: {exc}]"
+    if not per_file_edits:
+        return "No files to edit."
+
+    applied = _apply_workspace_edit(per_file_edits)
+    if isinstance(applied, str):  # error path
+        return applied
+
+    summary_parts = [
+        f"Renamed symbol → {new_name!r} across {len(applied)} file(s):",
+        *[f"  {p}" for p in applied],
+    ]
+    if skipped:
+        summary_parts.append(
+            f"Skipped {len(skipped)} non-edit operation(s) "
+            f"(create/delete/rename-file not supported in this stage)."
+        )
+    return "\n".join(summary_parts)
+
+
+def _normalize_workspace_edit(edit: dict) -> tuple[dict[str, list[dict]], list[str]]:
+    """Unify ``changes`` and ``documentChanges`` into ``{uri: [TextEdit]}``.
+
+    Returns ``(per_file_edits, skipped_descriptions)``. Skipped entries
+    are CreateFile / DeleteFile / RenameFile operations from the rich
+    ``documentChanges`` format — we don't apply them in this stage.
+    """
+    per_file: dict[str, list[dict]] = {}
+    skipped: list[str] = []
+
+    has_changes_key = isinstance(edit, dict) and "changes" in edit
+    has_docchanges_key = isinstance(edit, dict) and "documentChanges" in edit
+
+    simple = edit.get("changes") if isinstance(edit, dict) else None
+    if isinstance(simple, dict):
+        for uri, text_edits in simple.items():
+            if isinstance(text_edits, list):
+                per_file.setdefault(uri, []).extend(text_edits)
+
+    rich = edit.get("documentChanges") if isinstance(edit, dict) else None
+    if isinstance(rich, list):
+        for entry in rich:
+            if not isinstance(entry, dict):
+                continue
+            kind = entry.get("kind")
+            if kind in ("create", "delete", "rename"):
+                skipped.append(f"{kind}:{entry.get('uri') or entry.get('oldUri')}")
+                logger.warning("lsp_rename skipping %s op: %s", kind, entry)
+                continue
+            td = entry.get("textDocument")
+            text_edits = entry.get("edits")
+            if not isinstance(td, dict) or not isinstance(text_edits, list):
+                continue
+            uri = td.get("uri")
+            if not uri:
+                continue
+            per_file.setdefault(uri, []).extend(text_edits)
+
+    # Empty `changes: {}` or `documentChanges: []` is a legitimate "no
+    # files to edit" response. Only raise when NEITHER key is present
+    # (the server gave us a WorkspaceEdit shape we don't understand).
+    if not has_changes_key and not has_docchanges_key:
+        raise ValueError("neither 'changes' nor 'documentChanges' present")
+    return per_file, skipped
+
+
+def _apply_workspace_edit(per_file_edits: dict[str, list[dict]]) -> list[str] | str:
+    """Apply *per_file_edits* atomically; return applied paths or an error string.
+
+    Phase 1: read every file and keep original contents in memory.
+    Phase 2: for each file, apply text-edits in reverse order of start
+    offset so earlier edits don't shift later offsets. Write and record.
+    On failure anywhere in phase 2: restore all previously-written files
+    from the phase-1 backups and return a structured error string.
+    """
+    from aru.tools._shared import _checkpoint_file, _notify_file_mutation
+
+    # Phase 1: read + backup
+    backups: dict[str, str] = {}
+    for uri in per_file_edits:
+        path = uri_to_path(uri)
+        try:
+            with open(path, "r", encoding="utf-8", newline="") as f:
+                backups[path] = f.read()
+        except FileNotFoundError:
+            return f"[LSP rename failed: {path} not found]"
+        except OSError as exc:
+            return f"[LSP rename failed: cannot read {path}: {exc}]"
+
+    # Phase 2: apply
+    applied: list[str] = []
+    try:
+        for uri, text_edits in per_file_edits.items():
+            path = uri_to_path(uri)
+            _checkpoint_file(path)
+            original = backups[path]
+            try:
+                new_text = _apply_text_edits(original, text_edits)
+            except ValueError as exc:
+                raise RuntimeError(f"{path}: {exc}") from exc
+            if new_text == original:
+                continue
+            with open(path, "w", encoding="utf-8", newline="") as f:
+                f.write(new_text)
+            applied.append(path)
+            _notify_file_mutation(path=path, mutation_type="rename")
+    except Exception as exc:
+        # Rollback everything we've written so far
+        for p in applied:
+            try:
+                with open(p, "w", encoding="utf-8", newline="") as f:
+                    f.write(backups[p])
+            except OSError:
+                pass
+        return f"[LSP rename failed mid-apply, rolled back {len(applied)} file(s): {exc}]"
+
+    return applied
+
+
+def _apply_text_edits(text: str, text_edits: list[dict]) -> str:
+    """Apply a list of LSP TextEdits to *text*.
+
+    Sorts edits by start offset descending so earlier edits don't shift
+    later ones. Raises ``ValueError`` if any range is out-of-bounds.
+    """
+    offset_map = _build_line_offset_map(text)
+
+    def _edit_start_offset(edit: dict) -> int:
+        rng = edit.get("range") or {}
+        start = rng.get("start") or {}
+        return _position_to_offset(offset_map, start)
+
+    def _edit_end_offset(edit: dict) -> int:
+        rng = edit.get("range") or {}
+        end = rng.get("end") or {}
+        return _position_to_offset(offset_map, end)
+
+    # Sort descending by start so later offsets apply first
+    sorted_edits = sorted(text_edits, key=_edit_start_offset, reverse=True)
+    result = text
+    for edit in sorted_edits:
+        start_off = _edit_start_offset(edit)
+        end_off = _edit_end_offset(edit)
+        if start_off < 0 or end_off < start_off or end_off > len(result):
+            raise ValueError(f"edit range out of bounds: {edit.get('range')}")
+        new_text = edit.get("newText") or ""
+        result = result[:start_off] + new_text + result[end_off:]
+    return result
+
+
+def _build_line_offset_map(text: str) -> list[int]:
+    """Return a list where index i is the char offset of line i's start."""
+    offsets = [0]
+    for idx, ch in enumerate(text):
+        if ch == "\n":
+            offsets.append(idx + 1)
+    return offsets
+
+
+def _position_to_offset(line_offsets: list[int], position: dict) -> int:
+    line = int(position.get("line", 0))
+    char = int(position.get("character", 0))
+    if line < 0 or line >= len(line_offsets):
+        return -1
+    return line_offsets[line] + char
 
 
 async def lsp_diagnostics(file_path: str) -> str:
