@@ -1,0 +1,65 @@
+Use the `apply_patch` tool to make multi-file edits atomically. All operations
+succeed or none are applied — if any hunk fails validation, no files are
+modified. Prefer this over `edit_files` for refactors that touch 3+ files or
+that depend on consistent state across files.
+
+Patch envelope:
+
+    *** Begin Patch
+    [ one or more file operations ]
+    *** End Patch
+
+Each operation begins with exactly one of these headers:
+
+    *** Add File: <path>
+        Every following line MUST be prefixed with `+`. Those lines become
+        the initial file contents (in order, with the `+` stripped).
+
+    *** Delete File: <path>
+        No body follows. File must exist.
+
+    *** Update File: <path>
+        Optionally followed immediately by:
+            *** Move to: <newpath>
+        (renames the file after applying hunks — target must not exist.)
+        Then one or more hunks.
+
+Hunks start with `@@` optionally followed by an anchor line that helps
+locate the region inside long files:
+
+    @@ def my_function():
+
+Hunk body lines begin with one character:
+    `+` means insert this line
+    `-` means remove this line (must match the file verbatim)
+    ` ` (single space) means context — unchanged, used for matching
+
+Example:
+
+    *** Begin Patch
+    *** Add File: hello.txt
+    +Hello world
+    +Second line
+    *** Update File: src/app.py
+    @@ def greet(name):
+    -    print("Hi")
+    +    print(f"Hello, {name}!")
+    *** Update File: src/moved.py
+    *** Move to: src/renamed.py
+    @@ def foo():
+    -    pass
+    +    return 42
+    *** Delete File: src/obsolete.txt
+    *** End Patch
+
+Rules:
+
+- You MUST include a header for every operation (Add/Delete/Update).
+- For Update, the removed (`-`) and context (` `) lines MUST match the
+  current file verbatim — whitespace and indentation included. If you
+  are unsure of the current content, `read_file` first.
+- Do not include surrounding markdown fences, prose, or commentary —
+  only the `*** Begin Patch` envelope and its contents.
+- The tool validates the entire patch before touching disk. On any
+  validation or apply error, zero files are modified (in-flight changes
+  are rolled back).

@@ -63,6 +63,7 @@ aru/
     ├── ast_tools.py    # Tree-sitter Python AST analysis (classes, functions, imports)
     ├── ranker.py       # Multi-factor file relevance scoring
     ├── worktree.py     # Git worktree primitives (list/create/remove + worktree_info tool)
+    ├── apply_patch.py  # Atomic multi-file patch with rollback (Add/Update/Delete/Move)
     └── gitignore.py    # .gitignore-aware file filtering with caching
 ```
 
