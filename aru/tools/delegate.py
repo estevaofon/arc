@@ -442,7 +442,9 @@ Do not create documentation files unless explicitly asked.
             # same id back. Mirrors opencode/tool/task.ts:138-144.
             header = f"[{label} | task_id={task_id_for_output}]"
             if final_text:
-                return _truncate_output(f"{header} {final_text}")
+                return _truncate_output(
+                    f"{header} {final_text}", source_tool="delegate_task"
+                )
             return f"{header} Task completed but no output was returned."
 
         try:

@@ -385,30 +385,66 @@ def _save_truncated_output(text: str) -> str | None:
         return None
 
 
+def _build_truncation_marker(
+    *,
+    source_tool: str = "",
+    source_file: str = "",
+    original_bytes: int = 0,
+    original_lines: int = 0,
+    shown_head_lines: int = 0,
+    shown_tail_lines: int = 0,
+    saved_path: str | None = None,
+) -> str:
+    """Build a structured truncation marker that the model can parse.
+
+    Emits an XML-like self-closing tag with stable attribute order so agents
+    trained on this format can reliably extract the metadata without regex
+    gymnastics. Empty/zero fields are omitted to keep the marker compact.
+
+    Example::
+
+        <truncation source_tool="bash" original_lines="2000"
+          shown_head_lines="300" shown_tail_lines="200"
+          saved_at="/abs/path/output_xxx.txt" />
+
+    The model's system prompt documents the format once; BASE_INSTRUCTIONS
+    tells agents to use ``read_file`` with ``start_line``/``end_line`` on
+    ``saved_at`` (or ``source_file`` if present) to retrieve omitted rows.
+    """
+    attrs: list[str] = []
+    if source_tool:
+        attrs.append(f'source_tool="{source_tool}"')
+    if source_file:
+        attrs.append(f'source_file="{source_file}"')
+    if original_bytes:
+        attrs.append(f'original_bytes="{original_bytes}"')
+    if original_lines:
+        attrs.append(f'original_lines="{original_lines}"')
+    if shown_head_lines:
+        attrs.append(f'shown_head_lines="{shown_head_lines}"')
+    if shown_tail_lines:
+        attrs.append(f'shown_tail_lines="{shown_tail_lines}"')
+    if saved_path:
+        attrs.append(f'saved_at="{saved_path}"')
+
+    attr_str = " ".join(attrs)
+    return f"<truncation {attr_str} />" if attr_str else "<truncation />"
+
+
+# Legacy alias: external callers or tests that still build hints by name.
+# New code should call ``_build_truncation_marker`` directly.
 def _build_truncation_hint(
     source_file: str = "",
     source_tool: str = "",
     lines_shown: int = 0,
     saved_path: str | None = None,
 ) -> str:
-    """Build a context-aware truncation hint.
-
-    When output was saved to disk, points to the saved file.
-    When the source file is known, provides a direct read_file reference.
-    """
-    parts = ["[Truncated."]
-
-    if saved_path:
-        parts.append(f" Full output saved to: {saved_path}")
-        parts.append(" Use grep_search or read_file with start_line/end_line to inspect.")
-    elif source_file:
-        next_line = lines_shown + 1 if lines_shown else 1
-        parts.append(f' read_file("{source_file}", start_line={next_line}) for more.')
-    else:
-        parts.append(" Use grep_search to find specific content.")
-
-    parts.append("]")
-    return " ".join(parts)
+    return _build_truncation_marker(
+        source_tool=source_tool,
+        source_file=source_file,
+        shown_head_lines=lines_shown,
+        saved_path=saved_path,
+    )
 
 
 def truncate_output(
@@ -449,11 +485,19 @@ def truncate_output(
         head = lines[:TRUNCATE_KEEP_START]
         tail = lines[-TRUNCATE_KEEP_END:]
         omitted = line_count - TRUNCATE_KEEP_START - TRUNCATE_KEEP_END
-        hint = _build_truncation_hint(source_file, source_tool, TRUNCATE_KEEP_START, saved_path)
+        marker = _build_truncation_marker(
+            source_tool=source_tool,
+            source_file=source_file,
+            original_bytes=byte_len,
+            original_lines=line_count,
+            shown_head_lines=TRUNCATE_KEEP_START,
+            shown_tail_lines=TRUNCATE_KEEP_END,
+            saved_path=saved_path,
+        )
         return (
             "".join(head)
             + f"\n\n[... {omitted:,} lines omitted ({line_count:,} total)]\n"
-            + hint + "\n\n"
+            + marker + "\n\n"
             + "".join(tail)
         )
 
@@ -483,12 +527,20 @@ def truncate_output(
     tail_lines.reverse()
 
     omitted = line_count - len(head_lines) - len(tail_lines)
-    hint = _build_truncation_hint(source_file, source_tool, len(head_lines), saved_path)
+    marker = _build_truncation_marker(
+        source_tool=source_tool,
+        source_file=source_file,
+        original_bytes=byte_len,
+        original_lines=line_count,
+        shown_head_lines=len(head_lines),
+        shown_tail_lines=len(tail_lines),
+        saved_path=saved_path,
+    )
     return (
         "".join(head_lines)
         + f"\n\n[... truncated at ~{TRUNCATE_MAX_BYTES // 1024}KB — "
         f"{omitted:,} lines omitted]\n"
-        + hint + "\n\n"
+        + marker + "\n\n"
         + "".join(tail_lines)
     )
 
