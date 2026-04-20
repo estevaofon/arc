@@ -28,6 +28,7 @@ from aru.tools.shell import bash
 from aru.tools.skill import invoke_skill
 from aru.tools.tasklist import create_task_list, update_plan_step, update_task
 from aru.tools.apply_patch import apply_patch
+from aru.tools.lsp import lsp_definition, lsp_diagnostics, lsp_hover, lsp_references
 from aru.tools.web import web_fetch, web_search
 from aru.tools.worktree import worktree_info
 
@@ -43,6 +44,10 @@ _READ_ONLY_TOOLS = [
     _grep_search_tool,
     _list_directory_tool,
     worktree_info,
+    lsp_definition,
+    lsp_references,
+    lsp_hover,
+    lsp_diagnostics,
 ]
 
 _WRITE_TOOLS = [

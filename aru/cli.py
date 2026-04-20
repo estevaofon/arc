@@ -193,6 +193,9 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
     # Load project configuration
     config = load_config()
     ctx.config = config
+    # Wire LSP manager from config (Tier 2 #5) — no-op when config.lsp empty.
+    from aru.lsp.manager import install_lsp_from_config
+    install_lsp_from_config(config.lsp, root=os.getcwd())
     # Populate invoke_skill's dynamic docstring so the LLM-facing schema lists
     # the skills actually available on this machine.
     from aru.tools.skill import _update_invoke_skill_docstring

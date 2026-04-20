@@ -173,6 +173,10 @@ class AgentConfig:
     # Auto-memory extraction (Tier 2 #4). Opt-in — off by default to avoid
     # invisible token spend in new projects.
     memory: dict[str, Any] = field(default_factory=dict)
+    # LSP server per language (Tier 2 #5). Keys are language ids (python,
+    # typescript, rust, go, ...); values are {"command": "...", "args": [...], "env": {...}}.
+    # Empty ⇒ LSP tools report "not configured" without spawning anything.
+    lsp: dict[str, Any] = field(default_factory=dict)
 
     @property
     def has_instructions(self) -> bool:
@@ -521,6 +525,8 @@ def _apply_config_data(config: AgentConfig, data: dict, root: Path) -> None:
             config.disabled_tools = [str(t) for t in tools_cfg["disabled"]]
     if "memory" in data and isinstance(data["memory"], dict):
         config.memory = data["memory"]
+    if "lsp" in data and isinstance(data["lsp"], dict):
+        config.lsp = data["lsp"]
     if "instructions" in data and isinstance(data["instructions"], list):
         entries = [str(e) for e in data["instructions"] if isinstance(e, str)]
         config.rules_instructions = _resolve_instructions(entries, root)

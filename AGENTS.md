@@ -51,6 +51,11 @@ aru/
 │   ├── store.py        # Per-project storage, MEMORY.md index, slug generation
 │   ├── extractor.py    # Async extraction on turn.end via small-model sub-agent
 │   └── loader.py       # Inject MEMORY.md index into agent system prompt
+├── lsp/
+│   ├── __init__.py     # Public API: LspClient, LspManager, get_lsp_manager
+│   ├── protocol.py     # LSP types (Position, Range, Location) + JSON-RPC framing
+│   ├── client.py       # stdio LSP client (async JSON-RPC)
+│   └── manager.py      # Per-language singleton + health tracking + lazy spawn
 └── tools/
     ├── codebase.py     # Compat shim — re-exports from the modules below
     ├── _shared.py      # Cross-cutting helpers (notify mutation, thread_tool, truncate_output)
@@ -69,6 +74,7 @@ aru/
     ├── ranker.py       # Multi-factor file relevance scoring
     ├── worktree.py     # Git worktree primitives (list/create/remove + worktree_info tool)
     ├── apply_patch.py  # Atomic multi-file patch with rollback (Add/Update/Delete/Move)
+    ├── lsp.py          # 4 semantic tools: lsp_definition/references/hover/diagnostics
     └── gitignore.py    # .gitignore-aware file filtering with caching
 ```
 
