@@ -205,6 +205,91 @@ def handle_background_command(session) -> None:
         ))
 
 
+async def handle_mcp_command(args: str) -> None:
+    """Handle /mcp [status|restart <name>|list] — inspect & recover MCP servers.
+
+    Subcommands:
+        (no args) or "list"      List loaded tools (legacy behaviour).
+        "status"                 Show per-server health (state, failures, cooldown).
+        "restart <name>"         Atomically restart a single server.
+    """
+    import time as _time
+    from rich.table import Table
+    from rich.markup import escape
+
+    from aru.tools.mcp_client import get_mcp_manager
+
+    manager = get_mcp_manager()
+    parts = args.strip().split(None, 1)
+
+    # Default: list loaded tools (preserves old /mcp behaviour)
+    if not parts or parts[0].lower() == "list":
+        if not manager or not manager.catalog:
+            console.print("[dim]No MCP tools loaded. Check aru.mcp.json config.[/dim]")
+            return
+        console.print(f"[bold]MCP Tools ({len(manager.catalog)}):[/bold]\n")
+        for entry in manager.catalog.values():
+            console.print(f"  [bold cyan]{entry.name}[/bold cyan]  [dim]{entry.description}[/dim]")
+        return
+
+    sub = parts[0].lower()
+
+    if sub == "status":
+        if not manager or not manager.health:
+            console.print("[dim]No MCP servers configured.[/dim]")
+            return
+        state_style = {
+            "healthy": "green",
+            "initializing": "yellow",
+            "cooldown": "yellow",
+            "unavailable": "red",
+            "failed": "red",
+        }
+        table = Table(show_header=True, header_style="bold", box=None, padding=(0, 1))
+        table.add_column("Server", style="cyan")
+        table.add_column("State")
+        table.add_column("Tools", justify="right")
+        table.add_column("Failures", justify="right")
+        table.add_column("Cooldown", justify="right")
+        table.add_column("Last Error")
+        now = _time.time()
+        for h in sorted(manager.health.values(), key=lambda x: x.name):
+            tool_count = sum(1 for e in manager.catalog.values() if e.server_name == h.name)
+            cooldown_left = max(0, int(h.cooldown_until - now)) if h.cooldown_until else 0
+            cooldown_text = f"{cooldown_left}s" if cooldown_left else "-"
+            err_preview = (h.last_error[:60] + "…") if len(h.last_error) > 60 else h.last_error
+            table.add_row(
+                h.name,
+                f"[{state_style.get(h.state, 'white')}]{h.state}[/]",
+                str(tool_count),
+                str(h.consecutive_failures),
+                cooldown_text,
+                escape(err_preview) if err_preview else "-",
+            )
+        console.print(Panel(
+            table,
+            title=f"[bold]MCP servers ({len(manager.health)})[/bold]",
+            border_style="cyan",
+            padding=(0, 1),
+        ))
+        return
+
+    if sub == "restart":
+        if not manager:
+            console.print("[dim]No MCP manager active.[/dim]")
+            return
+        if len(parts) < 2:
+            console.print("[yellow]Usage: /mcp restart <server-name>[/yellow]")
+            return
+        name = parts[1].strip()
+        console.print(f"[dim]Restarting MCP server '{name}'...[/dim]")
+        result = await manager.restart_server(name)
+        console.print(result)
+        return
+
+    console.print(f"[yellow]Unknown /mcp subcommand: {sub}[/yellow]")
+
+
 def handle_debug_command(args: str) -> None:
     """Handle /debug <subcommand> — inspect internal state.
 

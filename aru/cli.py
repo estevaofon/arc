@@ -634,15 +634,10 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
                 console.print(f"\n[dim]Source: .agents/agents/*.md[/dim]")
             continue
 
-        if user_input.lower() == "/mcp":
-            from aru.tools.mcp_client import get_mcp_manager
-            manager = get_mcp_manager()
-            if not manager or not manager.catalog:
-                console.print("[dim]No MCP tools loaded. Check aru.mcp.json config.[/dim]")
-            else:
-                console.print(f"[bold]MCP Tools ({len(manager.catalog)}):[/bold]\n")
-                for entry in manager.catalog.values():
-                    console.print(f"  [bold cyan]{entry.name}[/bold cyan]  [dim]{entry.description}[/dim]")
+        if user_input.lower() == "/mcp" or user_input.lower().startswith("/mcp "):
+            from aru.commands import handle_mcp_command
+            rest = user_input[len("/mcp"):].strip()
+            await handle_mcp_command(rest)
             continue
 
         if user_input.lower() == "/plugin" or user_input.lower().startswith("/plugin "):
