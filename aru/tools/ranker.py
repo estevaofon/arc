@@ -208,7 +208,10 @@ def rank_files(task: str, top_k: int = 15) -> str:
         task: Natural language description of the task (e.g. "add authentication to the CLI").
         top_k: Maximum number of files to return. Defaults to 15.
     """
-    root_dir = os.getcwd()
+    # Tier 3 #2: respect the agent scope's cwd so explorer subagents in a
+    # worktree rank files from that worktree, not the process root.
+    from aru.runtime import get_cwd as _get_cwd
+    root_dir = _get_cwd()
     all_files = _get_project_files(root_dir)
 
     if not all_files:

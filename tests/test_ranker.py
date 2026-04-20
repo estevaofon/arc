@@ -324,6 +324,32 @@ class TestRankFiles:
         total = WEIGHT_NAME + WEIGHT_STRUCTURAL + WEIGHT_RECENCY
         assert abs(total - 1.0) < 0.001
 
+    def test_rank_files_uses_ctx_cwd_not_process_cwd(self, tmp_path):
+        """Tier 3 #2: rank_files must honour ctx.cwd so subagents in a
+        worktree rank files from their worktree, not the process root.
+        """
+        process_root = tmp_path / "process_root"
+        worktree_root = tmp_path / "worktree_root"
+        process_root.mkdir()
+        worktree_root.mkdir()
+        (process_root / "process_only.py").write_text("x = 1\n")
+        (worktree_root / "worktree_only.py").write_text("y = 2\n")
+
+        import os as _os
+        from aru.runtime import get_ctx
+        original = _os.getcwd()
+        _os.chdir(str(process_root))
+        ctx = get_ctx()
+        ctx.cwd = str(worktree_root)
+        try:
+            result = rank_files("task")
+        finally:
+            ctx.cwd = None
+            _os.chdir(original)
+
+        assert "worktree_only.py" in result
+        assert "process_only.py" not in result
+
     def test_rank_files_custom_weights(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         # auth.py matches "auth" by name; database.py does not

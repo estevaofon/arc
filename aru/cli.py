@@ -90,6 +90,49 @@ if sys.platform == "win32" and not hasattr(sys, "_called_from_test"):
 _logging.getLogger("agno").setLevel(_logging.WARNING)
 
 
+def _restore_worktree_from_session(session) -> str:
+    """Re-enter the worktree persisted on *session* (Tier 3 #2 R11).
+
+    Called at the top of ``run_cli`` right after the session is bound to
+    the runtime context. Three branches:
+
+    - ``worktree_path`` empty or missing → no-op, returns ``"none"``.
+    - ``worktree_path`` set AND directory exists on disk → ``enter_worktree``
+      is invoked so ``ctx.cwd`` matches the previous run. Returns
+      ``"entered"``.
+    - ``worktree_path`` set but directory is gone → warn, null the
+      session fields, return ``"stale"``.
+
+    Returns a short outcome label (``"none"``/``"entered"``/``"stale"``/
+    ``"error"``) so tests can pin the branch chosen without re-parsing
+    console output.
+    """
+    saved_wt = getattr(session, "worktree_path", None)
+    saved_branch = getattr(session, "worktree_branch", None)
+    if not saved_wt:
+        return "none"
+    if os.path.isdir(saved_wt):
+        from aru.runtime import enter_worktree as _re_enter
+        try:
+            _re_enter(saved_wt, saved_branch)
+            console.print(
+                f"[dim]Resumed inside worktree: {saved_branch} ({saved_wt})[/dim]"
+            )
+            return "entered"
+        except Exception as exc:
+            console.print(
+                f"[yellow]Could not re-enter worktree {saved_wt}: {exc}[/yellow]"
+            )
+            return "error"
+    console.print(
+        f"[yellow]Saved worktree path no longer exists: {saved_wt} — "
+        f"using project root[/yellow]"
+    )
+    session.worktree_path = None
+    session.worktree_branch = None
+    return "stale"
+
+
 def _configure_plugin_logger(verbose: bool = False) -> None:
     """Attach a stderr handler to the ``aru.plugins`` logger.
 
@@ -263,22 +306,7 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
     # Wire session and file-mutation callback
     ctx.session = session
 
-    # Tier 3 #2 R11: if this session was saved while inside a worktree,
-    # re-enter it so ctx.cwd matches the previous run. If the worktree was
-    # deleted on disk between runs, silently fall back to project_root.
-    _saved_wt = getattr(session, "worktree_path", None)
-    _saved_branch = getattr(session, "worktree_branch", None)
-    if _saved_wt and os.path.isdir(_saved_wt):
-        from aru.runtime import enter_worktree as _re_enter
-        try:
-            _re_enter(_saved_wt, _saved_branch)
-            console.print(f"[dim]Resumed inside worktree: {_saved_branch} ({_saved_wt})[/dim]")
-        except Exception as exc:
-            console.print(f"[yellow]Could not re-enter worktree {_saved_wt}: {exc}[/yellow]")
-    elif _saved_wt:
-        console.print(f"[yellow]Saved worktree path no longer exists: {_saved_wt} — using project root[/yellow]")
-        session.worktree_path = None
-        session.worktree_branch = None
+    _restore_worktree_from_session(session)
     ctx.on_file_mutation = session.invalidate_context_cache
     atexit.register(lambda: cleanup_processes(ctx.tracked_processes))
 
