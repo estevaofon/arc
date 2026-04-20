@@ -26,6 +26,7 @@ SLASH_COMMANDS = [
     ("/bg", "List background sub-agent tasks (pending notifications)", "/bg"),
     ("/mcp", "List loaded MCP tools", "/mcp"),
     ("/plugin", "Manage cached plugins (install/list/remove/update)", "/plugin <subcommand>"),
+    ("/debug", "Debug utilities (plugin-errors)", "/debug <subcommand>"),
     ("/undo", "Undo last turn — restore files and/or conversation", "/undo"),
     ("/cost", "Show detailed token usage and cost", "/cost"),
     ("/yolo", "Toggle DANGEROUSLY skip all permissions (YOLO mode)", "/yolo"),
@@ -202,6 +203,65 @@ def handle_background_command(session) -> None:
             border_style="cyan",
             padding=(0, 1),
         ))
+
+
+def handle_debug_command(args: str) -> None:
+    """Handle /debug <subcommand> — inspect internal state.
+
+    Subcommands:
+        plugin-errors    Dump recent plugin subscriber/hook errors.
+    """
+    from rich.table import Table
+    from rich.markup import escape
+    import datetime
+
+    parts = args.strip().split(None, 1)
+    if not parts:
+        console.print("[yellow]Usage: /debug <plugin-errors>[/yellow]")
+        return
+
+    sub = parts[0].lower()
+
+    if sub in ("plugin-errors", "plugins"):
+        from aru.runtime import get_ctx
+        try:
+            ctx = get_ctx()
+        except LookupError:
+            console.print("[yellow]No runtime context active.[/yellow]")
+            return
+        mgr = getattr(ctx, "plugin_manager", None)
+        if mgr is None:
+            console.print("[dim]No plugin manager active.[/dim]")
+            return
+        errors = mgr.recent_errors()
+        if not errors:
+            console.print("[dim]No plugin errors recorded in this session.[/dim]")
+            return
+
+        table = Table(show_header=True, header_style="bold", box=None, padding=(0, 1))
+        table.add_column("Time", style="dim", no_wrap=True)
+        table.add_column("Category", style="cyan", no_wrap=True)
+        table.add_column("Event", style="magenta", no_wrap=True)
+        table.add_column("Source")
+        table.add_column("Error", style="red")
+        for e in errors:
+            ts = datetime.datetime.fromtimestamp(e["timestamp"]).strftime("%H:%M:%S")
+            table.add_row(
+                ts,
+                str(e.get("category", "?")),
+                str(e.get("event", "?")),
+                escape(str(e.get("source", ""))),
+                escape(f"{e.get('error_type', 'Exception')}: {e.get('error', '')}"),
+            )
+        console.print(Panel(
+            table,
+            title=f"[bold]Plugin errors ({len(errors)})[/bold]",
+            border_style="red",
+            padding=(0, 1),
+        ))
+        return
+
+    console.print(f"[yellow]Unknown /debug subcommand: {sub}[/yellow]")
 
 
 def handle_plugin_command(args: str) -> None:

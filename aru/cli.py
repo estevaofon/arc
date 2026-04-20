@@ -89,6 +89,26 @@ if sys.platform == "win32" and not hasattr(sys, "_called_from_test"):
 
 _logging.getLogger("agno").setLevel(_logging.WARNING)
 
+
+def _configure_plugin_logger(verbose: bool = False) -> None:
+    """Attach a stderr handler to the ``aru.plugins`` logger.
+
+    Without this, ``logger.error(...)`` inside ``PluginManager`` (e.g. when a
+    subscriber raises) has no handler and disappears silently. Idempotent —
+    a marker attribute on the logger prevents double-registration when
+    ``run_cli`` is invoked multiple times in the same process (tests).
+    """
+    lg = _logging.getLogger("aru.plugins")
+    if getattr(lg, "_aru_handler_attached", False):
+        return
+    handler = _logging.StreamHandler(sys.stderr)
+    handler.setFormatter(
+        _logging.Formatter("[aru.plugins] %(levelname)s: %(message)s")
+    )
+    lg.addHandler(handler)
+    lg.setLevel(_logging.DEBUG if verbose else _logging.WARNING)
+    lg._aru_handler_attached = True  # type: ignore[attr-defined]
+
 # ── Imports used only in this module ───────────────────────────────────
 
 from aru.agents.planner import review_plan
@@ -147,6 +167,8 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
     # consumption by ~40% on multi-tool-call interactions via prompt caching.
     from aru.cache_patch import apply_cache_patch
     apply_cache_patch()
+
+    _configure_plugin_logger(verbose=bool(os.environ.get("ARU_VERBOSE")))
 
     ctx = init_ctx(console=console, skip_permissions=skip_permissions)
 
@@ -298,6 +320,10 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
     asyncio.create_task(_load_mcp_background())
 
     # Event: session.start
+    # publish() catches per-subscriber errors internally and records them in
+    # the manager's error ring buffer. Any exception escaping publish itself
+    # is a bug in the manager (or an asyncio cancellation) — log it instead
+    # of silently dropping, so it surfaces during development.
     if _plugin_mgr.loaded:
         try:
             await _plugin_mgr.publish("session.start", {
@@ -305,8 +331,10 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
                 "model_ref": session.model_ref,
                 "directory": os.getcwd(),
             })
-        except Exception:
-            pass
+        except Exception as exc:
+            _logging.getLogger("aru.plugins").exception(
+                "publish session.start failed: %s", exc
+            )
 
     while True:
         try:
@@ -479,8 +507,10 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
                     await _plugin_mgr.publish("session.end", {
                         "session_id": getattr(session, "id", None),
                     })
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _logging.getLogger("aru.plugins").exception(
+                        "publish session.end failed: %s", exc
+                    )
             store.save(session)
             console.print(f"\n[dim]Session saved: {session.session_id}[/dim]")
             console.print(f"[dim]Resume with:[/dim] [bold cyan]aru --resume {session.session_id}[/bold cyan]")
@@ -619,6 +649,12 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
             from aru.commands import handle_plugin_command
             rest = user_input[len("/plugin"):].strip()
             handle_plugin_command(rest)
+            continue
+
+        if user_input.lower() == "/debug" or user_input.lower().startswith("/debug "):
+            from aru.commands import handle_debug_command
+            rest = user_input[len("/debug"):].strip()
+            handle_debug_command(rest)
             continue
 
         if user_input.lower() == "/help":
@@ -862,6 +898,7 @@ async def run_oneshot(prompt: str, print_only: bool = False, skip_permissions: b
     from aru.cache_patch import apply_cache_patch
 
     apply_cache_patch()
+    _configure_plugin_logger(verbose=bool(os.environ.get("ARU_VERBOSE")))
     ctx = init_ctx(console=console, skip_permissions=skip_permissions)
 
     config = load_config()

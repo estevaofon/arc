@@ -12,7 +12,9 @@ Plugin sources:
 from __future__ import annotations
 
 import asyncio
-from collections import defaultdict
+import time
+import traceback as tb_module
+from collections import defaultdict, deque
 import importlib
 import importlib.metadata
 import importlib.util
@@ -26,6 +28,11 @@ from typing import Any, Callable
 from aru.plugins.hooks import VALID_HOOKS, HookEvent, Hooks, PluginInput
 
 logger = logging.getLogger("aru.plugins")
+
+# Max retained entries in each PluginManager._error_log ring buffer.
+# Enough for a reasonable `/debug plugin-errors` dump without unbounded growth
+# in long sessions where a broken plugin spams errors every turn.
+_ERROR_LOG_CAPACITY = 50
 
 
 @property
@@ -49,6 +56,9 @@ class PluginManager:
         self._loaded = False
         # Event bus: subscribers keyed by event type (or "*" for all)
         self._subscribers: dict[str, list[Callable]] = defaultdict(list)
+        # Ring buffer of per-subscriber / per-hook errors captured during
+        # publish/fire. Inspectable via `/debug plugin-errors`.
+        self._error_log: deque[dict[str, Any]] = deque(maxlen=_ERROR_LOG_CAPACITY)
 
     @property
     def loaded(self) -> bool:
@@ -61,6 +71,39 @@ class PluginManager:
     @property
     def plugin_names(self) -> list[str]:
         return list(self._plugin_names)
+
+    def recent_errors(self) -> list[dict[str, Any]]:
+        """Return a snapshot of the error ring buffer (most recent last)."""
+        return list(self._error_log)
+
+    def _record_error(
+        self,
+        category: str,
+        event: str,
+        error: BaseException,
+        source: str = "",
+    ) -> None:
+        """Capture an exception raised by a subscriber or hook handler.
+
+        Stores structured entry in the ring buffer and forwards to the
+        ``aru.plugins`` logger so users with a stderr handler configured
+        (see ``cli._configure_plugin_logger``) see the error live.
+        """
+        entry = {
+            "timestamp": time.time(),
+            "category": category,      # "subscriber" | "wildcard" | "hook"
+            "event": event,
+            "source": source,           # plugin name or callable repr when resolvable
+            "error_type": type(error).__name__,
+            "error": str(error),
+            "traceback": tb_module.format_exc(),
+        }
+        self._error_log.append(entry)
+        logger.error(
+            "Plugin %s error (%s/%s): %s",
+            category, event, source or "?", error,
+            exc_info=error,
+        )
 
     async def load_all(
         self,
@@ -167,7 +210,10 @@ class PluginManager:
                 except PermissionError:
                     raise  # let blocking signals propagate
                 except Exception as e:
-                    logger.error("Hook handler error (%s): %s", event_name, e)
+                    self._record_error(
+                        "hook", event_name, e,
+                        source=_describe_callable(handler),
+                    )
 
         return event
 
@@ -197,7 +243,10 @@ class PluginManager:
                 else:
                     cb(payload)
             except Exception as e:
-                logger.error("Event subscriber error (%s): %s", event_type, e)
+                self._record_error(
+                    "subscriber", event_type, e,
+                    source=_describe_callable(cb),
+                )
 
         # Notify wildcard subscribers
         for cb in self._subscribers.get("*", []):
@@ -207,7 +256,10 @@ class PluginManager:
                 else:
                     cb(payload)
             except Exception as e:
-                logger.error("Event subscriber error (*): %s", e)
+                self._record_error(
+                    "wildcard", event_type, e,
+                    source=_describe_callable(cb),
+                )
 
         # Fire the ``event`` hook so hook-based plugins also see all events
         await self.fire("event", payload)
@@ -357,6 +409,13 @@ class PluginManager:
         except Exception as e:
             logger.error("Plugin %s init failed: %s", name, e)
             return None
+
+
+def _describe_callable(cb: Callable) -> str:
+    """Short label for a callable — used in error records/log messages."""
+    mod = getattr(cb, "__module__", "") or ""
+    qual = getattr(cb, "__qualname__", None) or getattr(cb, "__name__", "") or repr(cb)
+    return f"{mod}.{qual}" if mod else qual
 
 
 def _parse_plugin_spec(spec: str | list) -> tuple[str, dict | None]:
