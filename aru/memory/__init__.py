@@ -33,6 +33,7 @@ from aru.memory.store import (
     list_memories,
     memory_dir_for_project,
     read_memory,
+    search_memories,
     write_memory,
 )
 
@@ -44,5 +45,6 @@ __all__ = [
     "memory_dir_for_project",
     "memory_section_for_prompt",
     "read_memory",
+    "search_memories",
     "write_memory",
 ]

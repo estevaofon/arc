@@ -206,6 +206,36 @@ def list_memories(project_root: str, base: str | None = None) -> list[MemoryEntr
     return results
 
 
+def search_memories(
+    project_root: str,
+    query: str,
+    *,
+    base: str | None = None,
+) -> list[MemoryEntry]:
+    """Return memories whose name, description, or body contains *query*.
+
+    Case-insensitive substring match. Ordering is deterministic: name
+    matches first, then description matches, then body-only matches.
+    Empty query returns every memory (same order as ``list_memories``).
+    """
+    query_l = (query or "").lower()
+    all_entries = list_memories(project_root, base=base)
+    if not query_l:
+        return all_entries
+
+    name_hits: list[MemoryEntry] = []
+    desc_hits: list[MemoryEntry] = []
+    body_hits: list[MemoryEntry] = []
+    for e in all_entries:
+        if query_l in (e.name or "").lower():
+            name_hits.append(e)
+        elif query_l in (e.description or "").lower():
+            desc_hits.append(e)
+        elif query_l in (e.body or "").lower():
+            body_hits.append(e)
+    return name_hits + desc_hits + body_hits
+
+
 def delete_memory(project_root: str, slug: str, base: str | None = None) -> bool:
     """Delete the memory file + remove its index line. True if something was removed."""
     mem_dir = memory_dir_for_project(project_root, base=base)

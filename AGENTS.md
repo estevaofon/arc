@@ -79,6 +79,7 @@ aru/
     ├── worktree.py     # Git worktree primitives (list/create/remove + worktree_info tool)
     ├── apply_patch.py  # Atomic multi-file patch with rollback (Add/Update/Delete/Move)
     ├── lsp.py          # 4 semantic tools: lsp_definition/references/hover/diagnostics
+    ├── memory_tool.py  # memory_search tool (query/slug/summary modes over auto-memory)
     └── gitignore.py    # .gitignore-aware file filtering with caching
 ```
 
