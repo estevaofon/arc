@@ -112,6 +112,64 @@ async def test_ask_choice_with_details_uses_inline_prompt_not_modal():
 
 
 @pytest.mark.asyncio
+async def test_inline_prompt_hides_input_bar_and_restores_on_answer():
+    """Claude-Code parity: the text input disappears while the approval
+    prompt is awaiting a decision, and returns once the user has answered.
+
+    Without this, the user sees both the approval options AND a blinking
+    text box at the bottom, making it ambiguous where to focus; the
+    decision surface must be the only one available while a choice is
+    pending.
+    """
+    from rich.panel import Panel
+    from textual.widgets import Input
+
+    from aru.tui.app import AruApp
+    from aru.tui.ui import TuiUI
+    from aru.tui.widgets.chat import ChatPane
+    from aru.tui.widgets.inline_choice import InlineChoicePrompt
+
+    app = AruApp()
+    holder: dict = {}
+
+    async def worker() -> None:
+        ui = TuiUI(app)
+        holder["choice"] = await asyncio.to_thread(
+            ui.ask_choice,
+            ["Yes", "No"],
+            title="Approve?",
+            default=0,
+            cancel_value=None,
+            details=Panel("- old\n+ new"),
+        )
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        inp = app.query_one("#input", Input)
+        assert not inp.has_class("-hidden"), "input should be visible at rest"
+        task = asyncio.create_task(worker())
+        for _ in range(50):
+            await pilot.pause(0.05)
+            if list(app.query_one(ChatPane).query(InlineChoicePrompt)):
+                break
+        # While the prompt is live, the input bar is hidden.
+        assert inp.has_class("-hidden"), (
+            "input should be hidden while InlineChoicePrompt is mounted"
+        )
+        await pilot.press("enter")
+        await asyncio.wait_for(task, timeout=5.0)
+        # After the user answers, the input bar is restored.
+        for _ in range(20):
+            await pilot.pause(0.05)
+            if not inp.has_class("-hidden"):
+                break
+        assert not inp.has_class("-hidden"), (
+            "input should reappear after the prompt is answered"
+        )
+    assert holder["choice"] == 0
+
+
+@pytest.mark.asyncio
 async def test_ask_choice_inline_esc_cancels_with_cancel_value():
     """Esc on the inline prompt dismisses with ``cancel_value``."""
     from rich.panel import Panel

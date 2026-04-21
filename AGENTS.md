@@ -1,15 +1,17 @@
 # Aru — AI Coding Assistant
 
-Aru is a multi-agent CLI coding assistant supporting multiple LLM providers (Anthropic, OpenAI, Ollama, Groq, OpenRouter, DeepSeek) via the Agno framework. It provides an interactive REPL where users describe tasks in natural language, and agents plan and execute code changes using a composable tool set (19 tools in the full set: 13 core + 5 task-management + 1 skill invocation).
+Aru is a multi-agent CLI coding assistant supporting multiple LLM providers (Anthropic, OpenAI, Ollama, Groq, OpenRouter, DeepSeek) via the Agno framework. It provides a Textual TUI (default) and a classic REPL (`--repl`) where users describe tasks in natural language, and agents plan and execute code changes using a composable tool set (19 tools in the full set: 13 core + 5 task-management + 1 skill invocation).
 
 ## Architecture
 
 ```
-main.py → cli.run_cli() → REPL loop
-                             ├─ Build Agent     (conversation + full tool set, primary)
-                             ├─ Plan Agent      (read-only, structured plan output)
-                             ├─ Executor Agent  (runs each plan step via runner)
-                             └─ Explorer Agent  (subagent spawned via delegate_task)
+main.py → cli.main() ─┬─ run_tui()   (default interactive mode, Textual)
+                      ├─ run_cli()   (--repl, classic REPL loop)
+                      └─ run_oneshot() (aru "prompt" / --print / piped stdin)
+
+Both interactive modes share: Build Agent (primary), Plan Agent
+(read-only), Executor Agent (plan step runner), Explorer Agent
+(subagent via delegate_task).
 ```
 
 Agents are described by `AgentSpec` entries in `agents/catalog.py` and instantiated lazily via `agent_factory.create_agent_from_spec`. All agents stream responses through Agno's `Agent` class.
@@ -322,16 +324,19 @@ The project uses a local `.venv` virtual environment. When using the `bash` tool
 - Sessions persisted as JSON in `.aru/sessions/`
 - Project language: Portuguese comments in some places; code in English
 
-## TUI architecture (``aru --tui``)
+## TUI architecture (default interactive mode)
 
-The Textual TUI is opt-in and lives side-by-side with the REPL. Both
-modes share 100% of the agent/tool/permission/session machinery; only
-presentation differs.
+The Textual TUI is the default interactive mode. The classic REPL is
+still available via ``aru --repl`` and lives side-by-side with the TUI.
+Both modes share 100% of the agent/tool/permission/session machinery;
+only presentation differs.
 
-**Entry points.** ``aru --tui`` (via ``cli.main`` / ``main.py``) routes
-to ``aru.tui.run_tui`` which performs the same bootstrap as the REPL
-(``init_ctx``, config, session, plugin manager, permission rules) and
-then awaits ``AruApp.run_async()``.
+**Entry points.** ``aru`` with no positional args (via ``cli.main`` /
+``main.py``) routes to ``aru.tui.run_tui`` which performs the same
+bootstrap as the REPL (``init_ctx``, config, session, plugin manager,
+permission rules) and then awaits ``AruApp.run_async()``. ``aru --repl``
+selects ``run_cli`` instead. ``aru --tui`` is still accepted for
+backwards compatibility but is now a no-op since TUI is the default.
 
 **Event bus.** Typed pydantic models in ``aru/events.py`` describe every
 ``plugin_manager.publish(...)`` payload. The manager coerces BaseModel →

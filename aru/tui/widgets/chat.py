@@ -196,7 +196,12 @@ class ChatPane(VerticalScroll):
     DEFAULT_CSS = """
     ChatPane {
         background: $surface;
-        padding: 1;
+        /* Top/right/left keep the original 1-cell padding; the bottom
+           is 2 so the last message always has breathing room above the
+           ThinkingIndicator (or the status bar when idle) — moved here
+           from ThinkingIndicator.margin-top so the gap is visible all
+           the time, not only while the agent is busy. */
+        padding: 1 1 2 1;
     }
     """
 

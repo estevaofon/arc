@@ -31,6 +31,7 @@ Scope parked:
 from __future__ import annotations
 
 import asyncio
+import sys
 from typing import Any
 
 from textual.app import App, ComposeResult
@@ -45,6 +46,133 @@ from aru.tui.widgets.loaded_pane import LoadedPane
 from aru.tui.widgets.status import StatusPane
 from aru.tui.widgets.thinking import ThinkingIndicator
 from aru.tui.widgets.tools import ToolsPane
+
+
+class PromptInput(Input):
+    """Single-line ``Input`` that accepts multi-line pastes.
+
+    Textual's default ``Input._on_paste`` keeps only
+    ``event.text.splitlines()[0]``, throwing away every line after the
+    first newline. For an agent prompt this is the wrong trade-off —
+    users pasting a stack trace, a diff, or a log block expect the whole
+    block to reach the agent, not just the first line.
+
+    We intercept multi-line pastes, stash them on the App, and surface
+    an inline notice so the user knows the paste landed even though the
+    single-line text box can't render it. Single-line pastes keep the
+    default behaviour (inserted at the cursor as regular text).
+
+    On submit ``AruApp.on_input_submitted`` merges any typed annotation
+    with the stashed paste using the same ``build_message`` shape as the
+    REPL (``PasteState.build_message``).
+    """
+
+    def _on_paste(self, event) -> None:
+        text = getattr(event, "text", "") or ""
+        if "\n" not in text and "\r" not in text:
+            # Single-line paste → let the base class handle it. Textual
+            # walks the entire MRO for matching ``_on_paste`` handlers,
+            # so we simply return and ``Input._on_paste`` runs next.
+            # Calling ``super()._on_paste`` here would cause it to run
+            # twice (once by us, once by the MRO loop), duplicating the
+            # inserted text.
+            return
+        # Multi-line paste — hand the full block to the App and stop
+        # the default handler. ``event.stop()`` only blocks bubble to
+        # parent widgets, so ``Input._on_paste`` would still execute
+        # from the MRO loop and insert the first line; ``prevent_default``
+        # sets ``_no_default_action`` which short-circuits that loop —
+        # that is what actually keeps the base class from clobbering us.
+        try:
+            self.app._stash_paste(text)
+        except Exception:
+            pass
+        try:
+            event.prevent_default()
+            event.stop()
+        except Exception:
+            pass
+
+
+# ── Terminal title helpers ───────────────────────────────────────────
+# OSC 0 sets both window and icon (tab) title on xterm-compatible
+# terminals (Windows Terminal, iTerm2, GNOME Terminal, Alacritty, etc).
+# CSI 22;0t pushes the current title onto the terminal's stack; 23;0t
+# pops it back, so we leave the shell's title unchanged when Aru exits.
+#
+# We write to ``sys.__stdout__`` (the *original* stdout, captured by
+# Python at interpreter startup) rather than ``sys.stdout``:
+#
+# * ``cli.py`` wraps ``sys.stdout`` in a fresh ``TextIOWrapper`` on
+#   Windows to force UTF-8. That wrapper doesn't always share flush
+#   behaviour with the underlying terminal stream — OSC escapes can get
+#   buffered or lost depending on the host (PowerShell + Windows
+#   Terminal hit this).
+# * Textual's WindowsDriver itself writes to ``sys.__stdout__`` via a
+#   dedicated WriterThread, so going the same route keeps our sequences
+#   on the same physical handle as the alt-screen frames.
+#
+# The ``is_headless`` check lives in the callers (``AruApp.on_mount``
+# and friends), so the helpers themselves only guard against
+# ``sys.__stdout__`` being absent (e.g. ``pythonw.exe`` with no
+# console) and then write unconditionally. Terminals that don't grok
+# OSC 0 / CSI title-stack just ignore the bytes.
+
+def _set_terminal_title(text: str) -> None:
+    out = sys.__stdout__
+    if out is None:
+        return
+    try:
+        clean = "".join(ch for ch in text if ch >= " ").strip()
+        if len(clean) > 80:
+            clean = clean[:77].rstrip() + "…"
+        out.write(f"\033]0;{clean}\a")
+        out.flush()
+    except Exception:
+        pass
+
+
+def _push_terminal_title() -> None:
+    out = sys.__stdout__
+    if out is None:
+        return
+    try:
+        out.write("\033[22;0t")
+        out.flush()
+    except Exception:
+        pass
+
+
+def _pop_terminal_title() -> None:
+    out = sys.__stdout__
+    if out is None:
+        return
+    try:
+        out.write("\033[23;0t")
+        out.flush()
+    except Exception:
+        pass
+
+
+def _compose_terminal_title(session: Any, pending: str | None = None) -> str:
+    """Return an ``aru <summary>`` string for the terminal tab.
+
+    ``pending`` wins when the user has just submitted a turn but the
+    message hasn't landed in ``session.history`` yet — lets the caller
+    flash the new prompt into the tab title immediately.
+    """
+    summary = ""
+    if pending:
+        summary = pending
+    elif session is not None:
+        try:
+            summary = session.title or ""
+        except Exception:
+            summary = ""
+    summary = summary.strip()
+    if summary in ("", "(empty session)"):
+        return "aru"
+    return f"aru — {summary}"
 
 
 class AruApp(App):
@@ -92,6 +220,12 @@ class AruApp(App):
         border: round $primary;
         padding: 0 1;
         margin: 0;
+    }
+    #input.-hidden {
+        /* Hidden while an InlineChoicePrompt is awaiting a decision —
+           nudges the user toward the approval options instead of the
+           text box (parity with claude-code's approval UX). */
+        display: none;
     }
     """
 
@@ -142,6 +276,11 @@ class AruApp(App):
         # prior turns so the user can re-send or tweak a message.
         self._history: list[str] = []
         self._history_cursor: int | None = None
+        # Multi-line paste buffer: populated by PromptInput._on_paste when
+        # the clipboard contents span multiple lines, consumed (and
+        # cleared) by on_input_submitted.
+        self._pending_paste: str | None = None
+        self._pending_paste_lines: int = 0
 
     # ── Composition ──────────────────────────────────────────────────
 
@@ -161,7 +300,7 @@ class AruApp(App):
         yield ThinkingIndicator()
         yield StatusPane(session=self.session)
         yield SlashCompleter()
-        yield Input(
+        yield PromptInput(
             placeholder="Type a message · / commands · @ files · Tab to accept · Enter to send",
             id="input",
         )
@@ -225,8 +364,70 @@ class AruApp(App):
         # Session/model info already surfaces in the sidebar ContextPane
         # and the bottom StatusPane, so no duplicate welcome line is
         # rendered under the logo — only the tagline above remains.
+        self._replay_resumed_history(chat)
         self._install_bus_subscriptions()
         self._populate_completer()
+        # Push the shell's title onto the terminal stack, then advertise
+        # ``aru`` (or ``aru — <last prompt>`` for resumed sessions) in
+        # the tab chrome. ``run_tui`` pops it back when the App exits.
+        # Skipped under ``run_test`` (headless) so pytest output stays
+        # clean and nobody's real tab gets relabeled during tests.
+        if not self.is_headless:
+            _push_terminal_title()
+            _set_terminal_title(_compose_terminal_title(self.session))
+
+    def _replay_resumed_history(self, chat: ChatPane) -> None:
+        """Render a resumed session's user/assistant text back into the chat.
+
+        When the user launches ``aru --resume <id>`` (or ``--resume``
+        alone for the last session), ``run_tui`` restores ``session.history``
+        from disk but the fresh ``ChatPane`` is empty, which makes the
+        TUI look like a brand-new session. Replaying the prior turns
+        gives the user a visible anchor — they can scroll up, read what
+        they were working on, and, critically, see the last prompt they
+        sent (the immediate reason they resumed).
+
+        Only ``text`` blocks are replayed; ``tool_use`` / ``tool_result``
+        blocks are skipped because a long session can easily accumulate
+        dozens of tool rows, and replaying them here would bury the
+        human-readable thread. The agent still sees the full block
+        history on the next turn via ``session.history``.
+        """
+        session = self.session
+        if session is None or not getattr(session, "history", None):
+            return
+        try:
+            from aru.history_blocks import is_text
+        except Exception:
+            return
+
+        pairs: list[tuple[str, str]] = []
+        for msg in session.history:
+            role = msg.get("role") if isinstance(msg, dict) else None
+            if role not in ("user", "assistant"):
+                continue
+            content = msg.get("content")
+            if isinstance(content, str):
+                text = content
+            elif isinstance(content, list):
+                parts = [b.get("text", "") for b in content
+                         if isinstance(b, dict) and is_text(b)]
+                text = "\n".join(p for p in parts if p)
+            else:
+                text = ""
+            if text and text.strip():
+                pairs.append((role, text))
+
+        if not pairs:
+            return
+
+        chat.add_system_message(f"Resumed session · {len(pairs)} message(s) restored")
+        for role, text in pairs:
+            if role == "user":
+                chat.add_user_message(text)
+            else:
+                chat.start_assistant_message()
+                chat.finalize_assistant_message(text)
 
     def _populate_completer(self) -> None:
         """Feed the SlashCompleter with dynamic entries from config.
@@ -362,7 +563,21 @@ class AruApp(App):
             event.prevent_default()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
-        text = (event.value or "").strip()
+        annotation = (event.value or "").strip()
+        # Merge any multi-line paste the user queued up via
+        # PromptInput._on_paste. The shape mirrors the REPL's
+        # PasteState.build_message: fenced block when annotated, bare
+        # content when the user just hit Enter right after pasting.
+        pasted = self._pending_paste
+        if pasted:
+            if annotation:
+                text = f"{annotation}\n\n```\n{pasted}\n```"
+            else:
+                text = pasted
+            self._pending_paste = None
+            self._pending_paste_lines = 0
+        else:
+            text = annotation
         if not text:
             return
         event.input.value = ""
@@ -385,6 +600,35 @@ class AruApp(App):
             )
             return
         self._dispatch_user_turn(text)
+
+    def _stash_paste(self, text: str) -> None:
+        """Hold a multi-line paste until the user submits.
+
+        Called from ``PromptInput._on_paste`` on the App loop. We keep
+        the visible Input value untouched so any annotation the user
+        had already typed survives, and we surface an inline system
+        note so the user knows their paste landed even though a
+        single-line text box can't render it.
+        """
+        self._pending_paste = text
+        self._pending_paste_lines = len(text.splitlines())
+        try:
+            self.query_one(ChatPane).add_system_message(
+                f"[{self._pending_paste_lines} lines pasted — press Enter "
+                "to send, or type a note first]"
+            )
+        except Exception:
+            pass
+        try:
+            # Brief toast as a second signal for users whose eyes are on
+            # the input bar, not the chat scrollback.
+            self.notify(
+                f"{self._pending_paste_lines} lines pasted",
+                severity="information",
+                timeout=3,
+            )
+        except Exception:
+            pass
 
     def _maybe_run_local_slash(self, text: str) -> bool:
         """Handle slash commands we can execute without the agent.
@@ -689,6 +933,10 @@ class AruApp(App):
         """Run the agent in a worker and stream into the chat pane."""
         chat = self.query_one(ChatPane)
         chat.add_user_message(text)
+        # Reflect the new prompt in the terminal tab so users with many
+        # tabs open can tell which one is working on what.
+        if not self.is_headless:
+            _set_terminal_title(_compose_terminal_title(self.session, pending=text))
         # Expand ``@file`` mentions in the user message so the agent sees
         # actual file contents as a prefixed block. Mirrors the REPL's
         # ``_resolve_mentions`` behaviour.
@@ -1354,5 +1602,26 @@ async def run_tui(
         ctx.ui = None
         try:
             store.save(session)
+        except Exception:
+            pass
+        # Restore the shell's original terminal-tab title. We pushed on
+        # mount, so popping leaves the user's tab exactly as they
+        # handed it to us — no stale "aru — …" lingering after exit.
+        try:
+            if not getattr(app, "is_headless", False):
+                _pop_terminal_title()
+        except Exception:
+            pass
+        # Mirror the REPL farewell so users see where their session went.
+        # Printed after Textual has released the terminal so it lands in
+        # the real scrollback, not the alt-screen that the TUI just tore
+        # down.
+        try:
+            from aru.display import console as _console
+            _console.print(f"\n[dim]Session saved: {session.session_id}[/dim]")
+            _console.print(
+                f"[dim]Resume with:[/dim] [bold cyan]aru --resume "
+                f"{session.session_id}[/bold cyan]"
+            )
         except Exception:
             pass

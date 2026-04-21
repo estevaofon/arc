@@ -41,9 +41,9 @@ class ThinkingIndicator(Widget):
         height: 1;
         color: $text-muted;
         padding: 0 1;
-        /* Breathing room above the rotating phrase so it doesn't glue
-           itself to the last chat message when the agent starts thinking. */
-        margin-top: 1;
+        /* Breathing room lives on ChatPane's bottom padding now — when
+           the indicator appears it should sit flush with that gap, not
+           stack a second one on top of it. */
     }
     ThinkingIndicator.-busy {
         display: block;

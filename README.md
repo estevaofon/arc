@@ -48,19 +48,13 @@ ANTHROPIC_API_KEY=sk-ant-your-key-here
 aru
 ```
 
-That's it — `aru` is available globally after install.
+That's it — `aru` is available globally after install. Running `aru`
+with no arguments drops straight into the full-screen Textual TUI:
+persistent chat pane, live tools sidebar, reactive status bar (session
+· model · tokens · cost · mode), branded header, and modal permission
+prompts.
 
-### TUI mode (optional)
-
-`aru --tui` launches a full-screen Textual interface: persistent chat
-pane, live tools sidebar, reactive status bar (session · model · tokens
-· cost · mode), branded header, and modal permission prompts.
-
-```bash
-aru --tui
-```
-
-Key bindings:
+Key bindings (TUI):
 
 | Key          | Action                   |
 |--------------|--------------------------|
@@ -72,9 +66,18 @@ Key bindings:
 | Up / Down    | Recall prior inputs      |
 
 Local slash commands inside the TUI: `/help`, `/clear`, `/quit`,
-`/plan`. Any other input is sent to the agent. The classic REPL (`aru`
-with no flags) is unchanged — both modes share the same sessions,
-plugins, permissions, and tools.
+`/plan`. Any other input is sent to the agent.
+
+### Classic REPL (opt-in)
+
+Prefer the single-line prompt? Pass `--repl` to use the classic REPL:
+
+```bash
+aru --repl
+```
+
+Both modes share the same sessions, plugins, permissions, and tools —
+only presentation differs.
 
 ## Usage
 

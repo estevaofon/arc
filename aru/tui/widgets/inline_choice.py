@@ -100,6 +100,29 @@ class InlineChoicePrompt(Widget):
         except Exception:
             pass
         opts.focus()
+        # Claude-Code parity: hide the text input while the user is
+        # making a decision so the approval options are the only
+        # interactive target. Restored in on_unmount.
+        self._toggle_input(hidden=True)
+
+    def on_unmount(self) -> None:
+        # Bring the text input back when the prompt goes away (either
+        # the user answered or the widget was programmatically removed).
+        self._toggle_input(hidden=False)
+
+    def _toggle_input(self, *, hidden: bool) -> None:
+        try:
+            inp = self.app.query_one("#input")
+        except Exception:
+            return
+        try:
+            if hidden:
+                inp.add_class("-hidden")
+            else:
+                inp.remove_class("-hidden")
+                inp.focus()
+        except Exception:
+            pass
 
     def on_option_list_option_selected(
         self, event: OptionList.OptionSelected

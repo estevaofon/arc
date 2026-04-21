@@ -121,21 +121,16 @@ class TuiUI:
                     on_choice=_on_choice,
                 )
                 chat.mount(prompt)
-                # Scroll so the TOP of the newly-mounted preview block
-                # is visible. Without this the auto-scroll-to-end of
-                # ChatPane would show only the bottom few lines of a
-                # long diff and the user would miss the start of it.
-                # We target the prompt itself so both the preview above
-                # AND the prompt land inside the viewport when the
-                # preview fits; for long previews, user scrolls up.
+                # Land the prompt at the bottom of the viewport — the
+                # input bar is hidden while the prompt is active, so the
+                # prompt itself becomes the only interactive surface and
+                # the user's eye should settle on it immediately.
+                # Short previews fit above the prompt in the same view;
+                # long previews push off the top and the user scrolls up
+                # to read them. Either way, the question is never
+                # parked mid-screen or below the fold.
                 try:
-                    preview_widgets = list(chat.children)
-                    # The preview is the second-to-last child; the prompt is
-                    # the last. Anchor scroll to the preview's top.
-                    if len(preview_widgets) >= 2:
-                        preview_widgets[-2].scroll_visible(
-                            animate=False, top=True
-                        )
+                    chat.scroll_end(animate=False)
                 except Exception:
                     pass
             except Exception as exc:

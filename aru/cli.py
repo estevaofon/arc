@@ -1060,7 +1060,7 @@ def main():
     args = sys.argv[1:]
     skip_permissions = "--dangerously-skip-permissions" in args
     print_only = "--print" in args or "-p" in args
-    tui_mode = "--tui" in args
+    repl_mode = "--repl" in args
 
     if "--list" in args:
         _list_sessions_and_exit()
@@ -1073,20 +1073,6 @@ def main():
             resume_id = args[idx + 1]
         else:
             resume_id = "last"
-
-    # TUI mode takes precedence over REPL but not over one-shot (positional).
-    # Checked AFTER --list / --resume so those flags still work in TUI.
-    if tui_mode:
-        from aru.tui import run_tui
-        try:
-            asyncio.run(run_tui(skip_permissions=skip_permissions, resume_id=resume_id))
-        except (KeyboardInterrupt, asyncio.CancelledError, SystemExit):
-            _graceful_exit()
-        except Exception as e:
-            from rich.markup import escape
-            console.print(f"\n[bold red]Fatal error: {escape(str(e))}[/bold red]")
-            _graceful_exit()
-        return
 
     # Collect positional arguments (non-flag, non-flag-value)
     flags_with_value = {"--resume"}
@@ -1120,9 +1106,22 @@ def main():
             console.print(f"\n[bold red]Fatal error: {escape(str(e))}[/bold red]")
         return
 
-    # Interactive REPL mode
+    # Interactive mode — TUI is the default; --repl opts into the classic REPL.
+    # `--tui` is still accepted for backwards compat but is now a no-op.
+    if repl_mode:
+        try:
+            asyncio.run(run_cli(skip_permissions=skip_permissions, resume_id=resume_id))
+        except (KeyboardInterrupt, asyncio.CancelledError, SystemExit):
+            _graceful_exit()
+        except Exception as e:
+            from rich.markup import escape
+            console.print(f"\n[bold red]Fatal error: {escape(str(e))}[/bold red]")
+            _graceful_exit()
+        return
+
+    from aru.tui import run_tui
     try:
-        asyncio.run(run_cli(skip_permissions=skip_permissions, resume_id=resume_id))
+        asyncio.run(run_tui(skip_permissions=skip_permissions, resume_id=resume_id))
     except (KeyboardInterrupt, asyncio.CancelledError, SystemExit):
         _graceful_exit()
     except Exception as e:
