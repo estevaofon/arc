@@ -314,13 +314,27 @@ def _prune_tool_messages(messages):
     return cleared
 
 
+_PATCH_APPLIED = False
+
+
 def apply_cache_patch():
-    """Apply all patches to reduce Agno's token consumption."""
+    """Apply all patches to reduce Agno's token consumption.
+
+    Idempotent: wrapping Agno's base Model methods is additive, so
+    calling this repeatedly (e.g. across a test suite's fixtures) would
+    nest the wrappers and multiply every side effect — including the
+    new per-call session token accumulation, which caused totals to
+    grow by the wrap-depth instead of by the real per-call delta.
+    """
+    global _PATCH_APPLIED
+    if _PATCH_APPLIED:
+        return
     _patch_tool_result_pruning()
     _patch_claude_cache_breakpoints()
     _patch_per_call_metrics()
     _patch_stop_reason_capture()
     _patch_overflow_recovery()
+    _PATCH_APPLIED = True
 
 
 def _patch_overflow_recovery():
@@ -459,6 +473,85 @@ def _patch_claude_cache_breakpoints():
     claude_utils.format_messages = _patched_format_messages
 
 
+def _publish_live_metrics(
+    input_tokens: int,
+    output_tokens: int,
+    cache_read: int,
+    cache_write: int,
+) -> None:
+    """Apply this call's tokens to the primary session and publish ``metrics.updated``.
+
+    Fires from inside ``_patched_accumulate`` after every internal LLM
+    API call. Scoped to ``subagent_depth == 0`` so subagent calls are
+    ignored here — their tokens are added in one shot by ``delegate_task``
+    when the sub-run completes (doing both would double-count).
+
+    On the primary session:
+      * bumps ``total_*`` counters so ``estimated_cost`` climbs live;
+      * updates ``last_*`` so the Last-context-window breakdown refreshes;
+      * records the added delta in ``_live_*_added`` so ``track_tokens``
+        at turn-end reconciles and never double-counts.
+
+    The publish falls back silently when no plugin manager / no session
+    is installed (tests, raw SDK use).
+    """
+    try:
+        from aru.runtime import get_ctx, _schedule_publish
+    except Exception:
+        return
+    try:
+        ctx = get_ctx()
+    except LookupError:
+        return
+    # Only the primary scope accumulates live — subagent tokens are
+    # added wholesale by delegate_task at sub-run completion.
+    if getattr(ctx, "subagent_depth", 0) != 0:
+        return
+    session = getattr(ctx, "session", None)
+    if session is None:
+        return
+    try:
+        session.total_input_tokens += input_tokens
+        session.total_output_tokens += output_tokens
+        session.total_cache_read_tokens += cache_read
+        session.total_cache_write_tokens += cache_write
+        session._live_input_added = (
+            getattr(session, "_live_input_added", 0) + input_tokens
+        )
+        session._live_output_added = (
+            getattr(session, "_live_output_added", 0) + output_tokens
+        )
+        session._live_cache_read_added = (
+            getattr(session, "_live_cache_read_added", 0) + cache_read
+        )
+        session._live_cache_write_added = (
+            getattr(session, "_live_cache_write_added", 0) + cache_write
+        )
+        session.last_input_tokens = input_tokens
+        session.last_output_tokens = output_tokens
+        session.last_cache_read = cache_read
+        session.last_cache_write = cache_write
+    except Exception:
+        return
+    try:
+        cost = float(session.estimated_cost)
+    except Exception:
+        cost = 0.0
+    _schedule_publish("metrics.updated", {
+        "session_id": getattr(session, "session_id", None)
+            or getattr(session, "id", None),
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cache_read_tokens": cache_read,
+        "cache_write_tokens": cache_write,
+        "total_input_tokens": session.total_input_tokens,
+        "total_output_tokens": session.total_output_tokens,
+        "total_cache_read_tokens": session.total_cache_read_tokens,
+        "total_cache_write_tokens": session.total_cache_write_tokens,
+        "estimated_cost": cost,
+    })
+
+
 def _patch_per_call_metrics():
     """Patch accumulate_model_metrics to capture per-API-call token counts.
 
@@ -515,6 +608,14 @@ def _patch_per_call_metrics():
             _last_call_output_tokens = output_tokens
             _last_call_cache_read = cache_read
             _last_call_cache_write = cache_write
+
+            # Intra-turn live session update + bus publish. Gated to the
+            # primary agent (subagent_depth == 0) so subagent API calls
+            # don't double-count — delegate_task adds subagent totals in
+            # one shot when the sub-run completes.
+            _publish_live_metrics(
+                input_tokens, output_tokens, cache_read, cache_write
+            )
         return _original_accumulate(model_response, model, model_type, run_metrics)
 
     _metrics_module.accumulate_model_metrics = _patched_accumulate

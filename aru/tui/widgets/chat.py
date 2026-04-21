@@ -18,8 +18,10 @@ Design (per plan-reviewer):
 
 from __future__ import annotations
 
+import io
 from typing import Any
 
+from rich.console import Console
 from rich.markdown import Markdown
 from rich.text import Text
 from textual.app import ComposeResult
@@ -41,11 +43,6 @@ class ChatMessageWidget(Static):
     # copy-via-mouse.
     ALLOW_SELECT: bool = True
 
-    # Cap assistant messages at this many lines — beyond this they
-    # become scrollable inside their own bubble instead of pushing the
-    # whole conversation down.
-    ASSISTANT_MAX_HEIGHT: int = 30
-
     DEFAULT_CSS = """
     ChatMessageWidget {
         height: auto;
@@ -59,11 +56,11 @@ class ChatMessageWidget(Static):
     }
     ChatMessageWidget.assistant {
         color: $text;
-        /* Long replies keep a generous cap before we wrap them in a
-           VerticalScroll (see ChatPane.add_renderable for scrollable
-           panels). Selection works natively on Static — no overflow
-           override here so mouse drag selects instead of scrolling. */
-        max-height: 60;
+        /* No inner max-height — long code blocks and replies flow into
+           the ChatPane's own scroll, matching OpenCode's behaviour.
+           The whole conversation scrolls as one, so the user can see
+           every line of a big file dump without hunting for a nested
+           scrollbar inside an assistant bubble. */
     }
     ChatMessageWidget.system {
         color: $text-muted;
@@ -119,71 +116,76 @@ class ChatMessageWidget(Static):
         if self.role == "user":
             return Text(f"> {text}", style="bold")
         if self.role == "assistant":
-            # Rich's ``Markdown`` produces a composite renderable whose
-            # content isn't visited by Textual's selection traversal, so
-            # users could not copy assistant replies with click+drag.
-            # Rendering as plain ``Text`` keeps selection fully working;
-            # lightweight markdown cues (headers, code fences) are
-            # styled via ``_markdown_to_text`` so the visual loss is
-            # small but selection is universal.
-            return _markdown_to_text(text) if text else Text("")
+            # Render markdown through Rich's real engine, then flatten
+            # the resulting Segment stream into one Text so Textual's
+            # selection traversal (click+drag, Ctrl+C) still walks the
+            # characters. Rich's ``Markdown`` used directly is a Group
+            # composite that selection skips — flattening preserves the
+            # visual polish (bold, headings, bullets, code highlight)
+            # without that limitation.
+            if not text:
+                return Text("")
+            width = max(self.size.width or 100, 20)
+            return _markdown_to_text(text, width=width)
         if self.role == "tool":
             icon = "✓" if self.tool_state == "done" else "↻"
             return Text(f"{icon} {text}")
         # system
         return Text(text)
 
+    def on_resize(self, event) -> None:
+        """Re-render the assistant bubble so markdown wrap follows width.
 
-def _markdown_to_text(raw: str) -> Text:
-    """Best-effort, selection-friendly rendering of markdown-ish content.
+        Without this, segments are frozen at whatever width was live when
+        the buffer last changed — a subsequent resize (toggling sidebar,
+        making the terminal wider) would leave wrap decisions stale.
+        """
+        if self.role == "assistant" and self.buffer:
+            try:
+                self.update(self._compose_renderable())
+            except Exception:
+                pass
 
-    Walks the markdown line-by-line and applies Rich styles in place:
 
-    * ``#`` / ``##`` / ``###`` headers → bold cyan
-    * Inline backticks → monospace-ish dim
-    * Fenced code blocks (```lang ... ```) → dim green
-    * Bullet markers (``-`` / ``*`` / ``1.``) kept verbatim
+def _markdown_to_text(raw: str, width: int = 100) -> Text:
+    """Render markdown via Rich, flatten the output into a selectable ``Text``.
 
-    No AST, no ``rich.markdown.Markdown`` → the output is a flat
-    ``Text`` whose characters live in Textual's selection traversal.
+    Uses Rich's real ``Markdown`` engine (bold, headings, bullets, fenced
+    code with syntax highlighting, links), then walks the resulting
+    ``Segment`` stream and rebuilds a single flat ``Text``. The flat
+    shape is what Textual's ``get_selected_text`` path traverses, so
+    click+drag inside an assistant bubble still selects arbitrary
+    ranges. Rich's ``Markdown`` as a renderable is a composite
+    (``Group`` of ``Panel``/``Syntax``/…) that bypasses that traversal —
+    this function avoids that by converting structure→style while
+    keeping the text linear.
+
+    Width is passed explicitly so wrap decisions match the current pane
+    width. On resize, ``ChatMessageWidget.on_resize`` re-calls this so
+    the styling follows.
     """
+    if not raw:
+        return Text("")
+    console = Console(
+        file=io.StringIO(),
+        width=max(width, 20),
+        color_system="truecolor",
+        force_terminal=True,
+        legacy_windows=False,
+    )
+    try:
+        options = console.options.update(width=max(width, 20))
+        segments = list(console.render(Markdown(raw), options))
+    except Exception:
+        # Defensive: Rich should never raise on arbitrary text, but if
+        # streaming ever hands us something pathological mid-delta, fall
+        # back to plain so the stream keeps flowing.
+        return Text(raw)
     out = Text()
-    in_code_block = False
-    for i, line in enumerate(raw.split("\n")):
-        stripped = line.lstrip()
-        if stripped.startswith("```"):
-            in_code_block = not in_code_block
-            out.append(line + "\n", style="dim green")
-            continue
-        if in_code_block:
-            out.append(line + "\n", style="green")
-            continue
-        if stripped.startswith("### "):
-            out.append(line + "\n", style="bold white")
-            continue
-        if stripped.startswith("## "):
-            out.append(line + "\n", style="bold cyan")
-            continue
-        if stripped.startswith("# "):
-            out.append(line + "\n", style="bold bright_cyan")
-            continue
-        # Inline backticks → dim highlighting while keeping the chars.
-        if "`" in line:
-            _append_with_backticks(out, line + "\n")
-            continue
-        out.append(line + "\n")
+    for seg in segments:
+        if seg.text:
+            out.append(seg.text, style=seg.style or "")
     return out
-
-
-def _append_with_backticks(out: Text, line: str) -> None:
-    """Append ``line`` to ``out``, styling backtick-enclosed spans."""
-    parts = line.split("`")
-    for idx, part in enumerate(parts):
-        if idx % 2 == 1:
-            out.append(f"`{part}`", style="bold dim yellow")
-        else:
-            if part:
-                out.append(part)
 
 
 class ChatPane(VerticalScroll):
@@ -237,10 +239,12 @@ class ChatPane(VerticalScroll):
         """Mount an arbitrary Rich renderable (e.g. the ASCII logo).
 
         When ``scrollable=True``, the renderable is wrapped in a
-        ``VerticalScroll`` with a fixed ``max_height`` so file contents,
-        long diffs, and big panels (e.g. newly created file previews)
-        don't push the rest of the conversation out of the viewport —
-        the user can scroll *inside* the block independently.
+        ``VerticalScroll`` that grows with its content up to
+        ``max_height`` lines and only engages the inner scrollbar when
+        the panel overflows. Using a hard ``height`` instead would
+        reserve 20 blank rows under every small panel (task list with 2
+        subtasks, one-liner plan status, etc.), which is the "giant
+        margin above and below" the user sees.
         """
         from textual.widgets import Static
         self._close_active_assistant()
@@ -248,10 +252,16 @@ class ChatPane(VerticalScroll):
         if scrollable:
             from textual.containers import VerticalScroll
             wrapper = VerticalScroll()
-            # Use `height` (not max-height) so the wrapper reserves an
-            # exact slot; Textual renders a scrollbar automatically when
-            # the child overflows.
-            wrapper.styles.height = max_height
+            # Auto height so a 3-line panel occupies 3 rows, not 20.
+            # The cap only kicks in for truly big content (long diffs,
+            # file previews) where the scrollbar is the whole point.
+            wrapper.styles.height = "auto"
+            wrapper.styles.max_height = max_height
+            # Kill any container padding/margin — the Rich panel already
+            # has its own border+padding and we don't want an extra blank
+            # row bleeding outside the box.
+            wrapper.styles.padding = 0
+            wrapper.styles.margin = 0
             self.mount(wrapper)
             wrapper.mount(widget)
         else:

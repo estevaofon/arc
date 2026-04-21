@@ -427,6 +427,12 @@ async def run_agent_capture(agent, message: str, session=None, lightweight: bool
             "session_id": getattr(session, "id", None),
         })
 
+        # Defensive: zero the intra-turn live-accumulation counters in case
+        # a prior turn crashed before reaching track_tokens and left them
+        # non-zero (they'd otherwise subtract real tokens from this turn).
+        if session is not None and hasattr(session, "reset_live_token_counters"):
+            session.reset_live_token_counters()
+
         # Event: message.user
         await _publish_event("message.user", {
             "message": run_message,

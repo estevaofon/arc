@@ -229,7 +229,17 @@ async def bash(command: str, timeout: int = 60, working_directory: str = "") -> 
         Syntax(command, "bash", theme="monokai"),
         Text(f"cwd: {cwd}", style="dim"),
     )
-    if not check_permission("bash", command, cmd_display):
+    # ``check_permission`` is sync and may open a TUI modal that blocks
+    # with ``threading.Event.wait()``. Calling it directly from this
+    # async tool (which runs on the App's event loop) would deadlock
+    # the loop → the modal callback never fires → timeout → "TUI Error"
+    # on every git / install / build command. Hopping to a worker
+    # thread keeps the loop free to drive the modal. Mirrors how sync
+    # tools (write_file, edit_file) are already dispatched via
+    # ``_thread_tool``.
+    if not await asyncio.to_thread(
+        check_permission, "bash", command, cmd_display
+    ):
         feedback = consume_rejection_feedback()
         if feedback:
             return (

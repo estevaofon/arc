@@ -357,6 +357,17 @@ class Session:
         self.last_output_tokens: int = 0
         self.last_cache_read: int = 0
         self.last_cache_write: int = 0
+        # Intra-turn live accumulation bookkeeping (see cache_patch).
+        # ``_patched_accumulate`` fires after every internal LLM API call
+        # and bumps the ``total_*`` fields so the TUI shows a live cost/
+        # token climb during long implementation phases. At turn-end,
+        # ``track_tokens`` reconciles with Agno's per-run cumulative
+        # metrics by adding only what WASN'T already added live, using
+        # these counters. Reset each turn by ``reset_live_token_counters``.
+        self._live_input_added: int = 0
+        self._live_output_added: int = 0
+        self._live_cache_read_added: int = 0
+        self._live_cache_write_added: int = 0
         # Context cache — invalidated on file mutations
         self._cached_tree: str | None = None
         self._cached_git_status: str | None = None
@@ -505,23 +516,53 @@ class Session:
         )
 
     def track_tokens(self, metrics):
-        """Accumulate token usage from a RunCompletedEvent.metrics."""
+        """Accumulate token usage from a RunCompletedEvent.metrics.
+
+        Reconciles with the per-call live accumulation done by
+        ``cache_patch._patched_accumulate``: only the deltas not already
+        added live are added here, so long turns with many internal API
+        calls get intra-turn updates without double-counting at turn-end.
+        Subagent runs (depth>0) skip live accumulation, so their Agno
+        cumulative metrics are still added in full via this path by
+        ``delegate_task``.
+        """
         if metrics is None:
             return
-        self.total_input_tokens += getattr(metrics, "input_tokens", 0) or 0
-        self.total_output_tokens += getattr(metrics, "output_tokens", 0) or 0
-        self.total_cache_read_tokens += getattr(metrics, "cache_read_tokens", 0) or 0
-        self.total_cache_write_tokens += getattr(metrics, "cache_write_tokens", 0) or 0
+        agno_in = getattr(metrics, "input_tokens", 0) or 0
+        agno_out = getattr(metrics, "output_tokens", 0) or 0
+        agno_cr = getattr(metrics, "cache_read_tokens", 0) or 0
+        agno_cw = getattr(metrics, "cache_write_tokens", 0) or 0
+        self.total_input_tokens += max(0, agno_in - self._live_input_added)
+        self.total_output_tokens += max(0, agno_out - self._live_output_added)
+        self.total_cache_read_tokens += max(
+            0, agno_cr - self._live_cache_read_added
+        )
+        self.total_cache_write_tokens += max(
+            0, agno_cw - self._live_cache_write_added
+        )
         self.api_calls += 1
+        self.reset_live_token_counters()
         # Capture last API call's context window (set by cache_patch)
         try:
             from aru.cache_patch import get_last_call_metrics
             self.last_input_tokens, self.last_output_tokens, self.last_cache_read, self.last_cache_write = get_last_call_metrics()
         except ImportError:
-            self.last_input_tokens = getattr(metrics, "input_tokens", 0) or 0
-            self.last_output_tokens = getattr(metrics, "output_tokens", 0) or 0
+            self.last_input_tokens = agno_in
+            self.last_output_tokens = agno_out
             self.last_cache_read = 0
             self.last_cache_write = 0
+
+    def reset_live_token_counters(self) -> None:
+        """Zero the intra-turn live-accumulation counters.
+
+        Called by ``track_tokens`` at turn-end and by the runner at turn
+        start (defensive — protects against leaks if a prior turn never
+        reached ``track_tokens``).
+        """
+        self._live_input_added = 0
+        self._live_output_added = 0
+        self._live_cache_read_added = 0
+        self._live_cache_write_added = 0
 
     def _get_pricing(self) -> tuple[float, float, float, float]:
         """Get per-million-token pricing for the current model."""

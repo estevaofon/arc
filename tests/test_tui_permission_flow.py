@@ -52,6 +52,170 @@ async def test_tui_ask_choice_from_worker_resolves_via_modal():
 
 
 @pytest.mark.asyncio
+async def test_ask_choice_with_details_uses_inline_prompt_not_modal():
+    """Preview + approval prompt both mount in the ChatPane, no modal.
+
+    The modal overlay would hide the diff behind itself — which defeats
+    the purpose of showing it. The inline path lets the user scroll the
+    ChatPane freely to read the full preview before pressing Enter on
+    the prompt. Mirrors OpenCode's UX.
+    """
+    from rich.panel import Panel
+    from aru.tui.app import AruApp
+    from aru.tui.screens import ChoiceModal
+    from aru.tui.ui import TuiUI
+    from aru.tui.widgets.chat import ChatPane
+    from aru.tui.widgets.inline_choice import InlineChoicePrompt
+
+    app = AruApp()
+    holder: dict = {}
+    diff = Panel(
+        "- old line\n+ new line\n+ more lines of diff",
+        title="edit: /tmp/foo.py",
+        border_style="yellow",
+    )
+
+    async def worker() -> None:
+        ui = TuiUI(app)
+        holder["choice"] = await asyncio.to_thread(
+            ui.ask_choice,
+            ["Yes", "No"],
+            title="Approve?",
+            default=0,
+            cancel_value=None,
+            details=diff,
+        )
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        task = asyncio.create_task(worker())
+        # Wait for the inline prompt to mount in the ChatPane.
+        for _ in range(50):
+            await pilot.pause(0.05)
+            chat = app.query_one(ChatPane)
+            prompts = list(chat.query(InlineChoicePrompt))
+            if prompts:
+                break
+        # Crucial: no ChoiceModal was pushed — the details stay visible.
+        assert not any(
+            isinstance(s, ChoiceModal) for s in app.screen_stack
+        ), "inline path must not push a ChoiceModal"
+        # The prompt is present; so is the preview panel above it.
+        chat = app.query_one(ChatPane)
+        assert list(chat.query(InlineChoicePrompt)), (
+            "expected InlineChoicePrompt in ChatPane"
+        )
+        # Press Enter — OptionList focuses on mount, default=0 highlighted.
+        await pilot.press("enter")
+        await asyncio.wait_for(task, timeout=5.0)
+    assert holder["choice"] == 0
+
+
+@pytest.mark.asyncio
+async def test_ask_choice_inline_esc_cancels_with_cancel_value():
+    """Esc on the inline prompt dismisses with ``cancel_value``."""
+    from rich.panel import Panel
+    from aru.tui.app import AruApp
+    from aru.tui.ui import TuiUI
+    from aru.tui.widgets.chat import ChatPane
+    from aru.tui.widgets.inline_choice import InlineChoicePrompt
+
+    app = AruApp()
+    holder: dict = {}
+
+    async def worker() -> None:
+        ui = TuiUI(app)
+        holder["choice"] = await asyncio.to_thread(
+            ui.ask_choice,
+            ["Yes", "No"],
+            title="Approve?",
+            default=0,
+            cancel_value=99,
+            details=Panel("preview"),
+        )
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        task = asyncio.create_task(worker())
+        for _ in range(50):
+            await pilot.pause(0.05)
+            if list(app.query_one(ChatPane).query(InlineChoicePrompt)):
+                break
+        await pilot.press("escape")
+        await asyncio.wait_for(task, timeout=5.0)
+    assert holder["choice"] == 99
+
+
+@pytest.mark.asyncio
+async def test_auto_accept_inline_choice_updates_status_pane_mode():
+    """Regression: picking "auto-accept edits" from the permission prompt
+    must update the StatusPane mode badge via the bus.
+
+    Reproduces the bug where ``check_permission`` assigned
+    ``ctx.permission_mode`` directly, bypassing ``set_permission_mode``
+    and the ``permission.mode.changed`` publish — so the status bar
+    stayed stuck on "default" after the user explicitly opted in.
+    """
+    from rich.panel import Panel
+
+    from aru.plugins.manager import PluginManager
+    from aru.runtime import init_ctx, set_ctx
+    from aru.tui.app import AruApp
+    from aru.tui.ui import TuiUI
+    from aru.tui.widgets.chat import ChatPane
+    from aru.tui.widgets.inline_choice import InlineChoicePrompt
+    from aru.tui.widgets.status import StatusPane
+
+    ctx = init_ctx()
+    ctx.permission_mode = "default"
+    mgr = PluginManager()
+    mgr._loaded = True  # enable _schedule_publish delivery
+    ctx.plugin_manager = mgr
+
+    app = AruApp(ctx=ctx, plugin_manager=mgr)
+    ctx.tui_app = app
+    holder: dict = {}
+
+    async def worker() -> None:
+        set_ctx(ctx)
+        from aru.permissions import check_permission
+
+        holder["allowed"] = await asyncio.to_thread(
+            check_permission,
+            "edit",
+            "/tmp/foo.py",
+            Panel("- old\n+ new", title="edit: /tmp/foo.py"),
+        )
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        ctx.ui = TuiUI(app)
+        status = app.query_one(StatusPane)
+        assert status.mode == "default"
+        task = asyncio.create_task(worker())
+        for _ in range(60):
+            await pilot.pause(0.05)
+            chat = app.query_one(ChatPane)
+            if list(chat.query(InlineChoicePrompt)):
+                break
+        # Option index 1 = "Yes, and auto-accept edits".
+        await pilot.press("down")
+        await pilot.press("enter")
+        await asyncio.wait_for(task, timeout=5.0)
+        # Let the publish task + subscriber dispatch land on this loop.
+        for _ in range(10):
+            await pilot.pause(0.05)
+            if status.mode == "acceptEdits":
+                break
+    assert holder["allowed"] is True
+    assert ctx.permission_mode == "acceptEdits"
+    assert status.mode == "acceptEdits", (
+        f"StatusPane.mode stayed on {status.mode!r} — "
+        "permission.mode.changed was never published."
+    )
+
+
+@pytest.mark.asyncio
 async def test_tui_confirm_from_worker_returns_bool():
     from aru.tui.app import AruApp
     from aru.tui.ui import TuiUI

@@ -25,8 +25,13 @@ async def test_toggle_sidebar_hides_and_restores():
 
 
 @pytest.mark.asyncio
-async def test_assistant_message_has_max_height_for_scroll():
-    """Assistant messages cap at 30 lines — overflow becomes scrollable."""
+async def test_assistant_message_flows_into_chat_scroll():
+    """Long assistant replies expand the widget; ChatPane owns the scroll.
+
+    OpenCode-parity: we removed the per-bubble ``max-height`` cap so big
+    code dumps don't get trapped in a nested scroll box. The widget is
+    free to grow and the outer VerticalScroll (ChatPane) handles it.
+    """
     from aru.tui.app import AruApp
     from aru.tui.widgets.chat import ChatMessageWidget, ChatPane
 
@@ -35,7 +40,6 @@ async def test_assistant_message_has_max_height_for_scroll():
         await pilot.pause()
         chat = app.query_one(ChatPane)
         chat.start_assistant_message()
-        # Cram a huge reply into the buffer.
         big = "\n".join(f"line {i}" for i in range(200))
         chat.append_assistant_delta(big)
         await pilot.pause(0.15)
@@ -44,13 +48,13 @@ async def test_assistant_message_has_max_height_for_scroll():
         assistants = [
             m for m in chat.query(ChatMessageWidget) if m.role == "assistant"
         ]
+        final = assistants[-1]
+        max_height = final.styles.max_height
     assert assistants
-    # CSS enforces max-height 30 in lines; reading it off styles.rules.
-    final = assistants[-1]
-    # The exact computed height depends on rich, but the widget class
-    # has the class "assistant" which has the max-height rule. Sanity:
-    # buffer is huge, so rendered area > screen height iff scroll works.
     assert len(final.buffer) > 1000
+    # No inner cap — either unset or "auto". Any concrete cell value
+    # would bring back the nested-scrollbar bug.
+    assert max_height is None or str(max_height) == "auto"
 
 
 @pytest.mark.asyncio

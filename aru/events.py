@@ -138,6 +138,32 @@ class PermissionModeChangedEvent(BaseEvent):
     new_mode: str = ""
 
 
+# ── Intra-turn metrics ────────────────────────────────────────────────
+
+
+class MetricsUpdatedEvent(BaseEvent):
+    """Published after each internal LLM API call (from ``cache_patch``).
+
+    Lets the TUI refresh tokens/cost mid-turn so long implementation runs
+    (many tool calls, many internal API calls, minutes between user
+    prompts) don't sit silent on the status bar.
+    """
+
+    event_type: Literal["metrics.updated"] = "metrics.updated"
+    session_id: str | None = None
+    # Per-call figures (the call that just landed).
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    # Session cumulatives after this call has been added.
+    total_input_tokens: int = 0
+    total_output_tokens: int = 0
+    total_cache_read_tokens: int = 0
+    total_cache_write_tokens: int = 0
+    estimated_cost: float = 0.0
+
+
 # ── Aggregate union (for subscribers that want exhaustive matching) ──
 
 
@@ -154,6 +180,7 @@ AruEvent = Union[
     FileChangedEvent,
     PermissionDeniedEvent,
     PermissionModeChangedEvent,
+    MetricsUpdatedEvent,
 ]
 
 
@@ -173,6 +200,7 @@ EVENT_MODELS: dict[str, type[BaseEvent]] = {
     "file.changed": FileChangedEvent,
     "permission.denied": PermissionDeniedEvent,
     "permission.mode.changed": PermissionModeChangedEvent,
+    "metrics.updated": MetricsUpdatedEvent,
 }
 
 

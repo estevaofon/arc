@@ -430,8 +430,12 @@ def _schedule_publish(event_type: str, data: dict[str, Any]) -> None:
     """Fire-and-forget ``plugin_manager.publish`` without requiring a running loop.
 
     Helpers like ``enter_worktree`` are called from sync paths (slash
-    commands) where we don't want to block. If a loop is running, schedule
-    the coroutine; if not, drop silently (tests without an event loop).
+    commands) where we don't want to block. If a loop is running,
+    schedule the coroutine on it; otherwise fall back to the TUI app's
+    loop via ``call_from_thread`` (tool callbacks run on worker threads
+    spawned by ``asyncio.to_thread`` — those threads don't have their
+    own running loop); if neither is available, drop silently (tests
+    without an event loop).
     """
     try:
         ctx = get_ctx()
@@ -445,8 +449,19 @@ def _schedule_publish(event_type: str, data: dict[str, Any]) -> None:
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
+        loop = None
+    if loop is not None:
+        loop.create_task(mgr.publish(event_type, data))
         return
-    loop.create_task(mgr.publish(event_type, data))
+
+    tui_app = getattr(ctx, "tui_app", None)
+    if tui_app is not None:
+        try:
+            tui_app.call_from_thread(
+                lambda: asyncio.create_task(mgr.publish(event_type, data))
+            )
+        except Exception:
+            pass
 
 
 def resolve_path(path: str) -> str:

@@ -178,3 +178,135 @@ class TestCompactionTriggerRegression:
             f"prompt_tokens and cached_tokens are being double-counted."
         )
         assert should_compact(last_call_window, model_id="qwen3.6-plus") is False
+
+
+class TestLiveMetricsAccumulation:
+    """Regression: the status bar must climb during long implementation phases.
+
+    ``_patched_accumulate`` now publishes ``metrics.updated`` and bumps
+    ``session.total_*`` on every internal LLM call, so the TUI doesn't
+    sit silent for minutes on tool-heavy turns. ``track_tokens`` at
+    turn-end reconciles with Agno's cumulative metrics so nothing double-
+    counts.
+    """
+
+    def _install_primary_ctx(self, monkeypatch):
+        """Install a ctx with a real Session + stub plugin manager."""
+        from aru.runtime import init_ctx
+        from aru.session import Session
+
+        ctx = init_ctx()
+        ctx.session = Session()
+        ctx.subagent_depth = 0
+        published: list[tuple[str, dict]] = []
+
+        class _StubMgr:
+            loaded = True
+            async def publish(self, event_type, data):
+                published.append((event_type, data))
+
+        ctx.plugin_manager = _StubMgr()
+        return ctx, published
+
+    @pytest.mark.asyncio
+    async def test_session_totals_climb_per_call(self, patched_accumulate, monkeypatch):
+        """Three internal calls land before the turn ends; totals track live."""
+        ctx, published = self._install_primary_ctx(monkeypatch)
+        _reset_globals()
+        ctx.session.reset_live_token_counters()
+
+        for call_in, call_out, cache_r in [(1_000, 50, 500), (800, 40, 200), (1_200, 60, 0)]:
+            usage = _FakeUsage(
+                input_tokens=call_in,
+                output_tokens=call_out,
+                cache_read_tokens=cache_r,
+                cache_write_tokens=0,
+            )
+            patched_accumulate(
+                _FakeResponse(usage), _FakeAnthropicModel(), "model", run_metrics=None
+            )
+
+        # Wait for the fire-and-forget publish tasks to drain.
+        import asyncio
+        for _ in range(10):
+            await asyncio.sleep(0)
+
+        s = ctx.session
+        assert s.total_input_tokens == 3_000
+        assert s.total_output_tokens == 150
+        assert s.total_cache_read_tokens == 700
+        # Live counters reflect the same deltas for turn-end reconciliation.
+        assert s._live_input_added == 3_000
+        assert s._live_output_added == 150
+        # The event fired on each call, carrying the running totals.
+        metrics_events = [d for name, d in published if name == "metrics.updated"]
+        assert len(metrics_events) == 3
+        assert metrics_events[-1]["total_input_tokens"] == 3_000
+        assert metrics_events[-1]["estimated_cost"] >= 0.0
+
+    @pytest.mark.asyncio
+    async def test_track_tokens_does_not_double_count_after_live_updates(
+        self, patched_accumulate, monkeypatch
+    ):
+        """Turn-end reconciliation: track_tokens adds only the unaccounted delta."""
+        ctx, _ = self._install_primary_ctx(monkeypatch)
+        _reset_globals()
+        ctx.session.reset_live_token_counters()
+
+        # Two live calls, then turn-end with Agno's cumulative matching exactly.
+        for call_in, call_out in [(1_000, 50), (500, 25)]:
+            usage = _FakeUsage(
+                input_tokens=call_in,
+                output_tokens=call_out,
+                cache_read_tokens=0,
+                cache_write_tokens=0,
+            )
+            patched_accumulate(
+                _FakeResponse(usage), _FakeAnthropicModel(), "model", run_metrics=None
+            )
+
+        class _RunMetrics:
+            input_tokens = 1_500
+            output_tokens = 75
+            cache_read_tokens = 0
+            cache_write_tokens = 0
+
+        ctx.session.track_tokens(_RunMetrics())
+
+        s = ctx.session
+        assert s.total_input_tokens == 1_500, "track_tokens must not re-add"
+        assert s.total_output_tokens == 75
+        assert s.api_calls == 1
+        # Live counters reset so the next turn starts clean.
+        assert s._live_input_added == 0
+        assert s._live_output_added == 0
+
+    def test_subagent_scope_skips_live_accumulation(self, patched_accumulate, monkeypatch):
+        """Subagent API calls don't double-count the primary session.
+
+        delegate_task adds the sub-run's tokens in one shot at completion,
+        so ``_patched_accumulate`` must skip live updates when
+        ``subagent_depth > 0``.
+        """
+        ctx, _ = self._install_primary_ctx(monkeypatch)
+        ctx.subagent_depth = 1
+        _reset_globals()
+        ctx.session.reset_live_token_counters()
+
+        usage = _FakeUsage(
+            input_tokens=2_000,
+            output_tokens=100,
+            cache_read_tokens=0,
+            cache_write_tokens=0,
+        )
+        patched_accumulate(
+            _FakeResponse(usage), _FakeAnthropicModel(), "model", run_metrics=None
+        )
+
+        s = ctx.session
+        assert s.total_input_tokens == 0
+        assert s._live_input_added == 0
+        # Globals still updated — cache_patch-consuming code (compaction
+        # trigger) keeps the usual visibility regardless of scope.
+        in_t, _, _, _ = get_last_call_metrics()
+        assert in_t == 2_000

@@ -85,7 +85,10 @@ class AruApp(App):
         display: none;
     }
     #input {
-        height: 3;
+        /* height = 2 content rows + round border (1 top + 1 bottom) = 4.
+           The extra content row gives the caret breathing room so the
+           input bar doesn't feel cramped under the status line. */
+        height: 4;
         border: round $primary;
         padding: 0 1;
         margin: 0;
@@ -155,8 +158,8 @@ class AruApp(App):
                     plugin_manager=self.plugin_manager,
                     ctx=self.ctx,
                 )
-        yield StatusPane(session=self.session)
         yield ThinkingIndicator()
+        yield StatusPane(session=self.session)
         yield SlashCompleter()
         yield Input(
             placeholder="Type a message · / commands · @ files · Tab to accept · Enter to send",
@@ -187,14 +190,18 @@ class AruApp(App):
         chat = self.query_one(ChatPane)
         # Branded ASCII logo replaces the now-removed AruHeader so the
         # user sees the same "aru" welcome moment as in the REPL.
+        # Wrapped in ``Align.center`` so the ASCII art sits centered on
+        # the chat width instead of hugging the left margin.
         try:
+            from rich.align import Align
             from aru.display import _build_logo_with_shadow, aru_logo
-            chat.add_renderable(_build_logo_with_shadow(aru_logo))
+            chat.add_renderable(Align.center(_build_logo_with_shadow(aru_logo)))
         except Exception:
             pass
         # Tagline under the logo — includes the package version so the
         # user always knows which build they're on.
         try:
+            from rich.align import Align
             from rich.text import Text as _Text
             try:
                 from importlib.metadata import version as _pkg_version
@@ -205,7 +212,14 @@ class AruApp(App):
             tagline.append("A coding agent powered by OpenSource", style="italic")
             if _v:
                 tagline.append(f"  v{_v}", style="dim")
-            chat.add_renderable(tagline)
+            chat.add_renderable(Align.center(tagline))
+            # Two blank rows so the logo+tagline aren't glued to whatever
+            # lands underneath (first system line, chat message, or the
+            # prompt itself on short terminals).
+            from textual.widgets import Static as _Static
+            spacer = _Static("")
+            spacer.styles.height = 2
+            chat.mount(spacer)
         except Exception:
             pass
         # Session/model info already surfaces in the sidebar ContextPane
@@ -740,6 +754,14 @@ class AruApp(App):
                 from aru.runtime import set_ctx
                 set_ctx(self.ctx)
 
+            # Clear any abort flag left over from a prior Ctrl+C so the
+            # new turn isn't short-circuited before it even starts.
+            try:
+                from aru.runtime import reset_abort
+                reset_abort()
+            except Exception:
+                pass
+
             agent = await create_agent_from_spec(
                 AGENTS["build"],
                 session=self.session,
@@ -834,10 +856,20 @@ class AruApp(App):
                 "cwd.changed",
                 lambda p: _dispatch(status.update_from_cwd_change, p),
             )
+            # Intra-turn: refresh after every internal LLM call so long
+            # implementation phases show a live cost/token climb.
+            mgr.subscribe(
+                "metrics.updated",
+                lambda p: _dispatch(status.update_from_metrics, p),
+            )
         if ctx_pane is not None:
             mgr.subscribe(
                 "turn.end",
                 lambda p: _dispatch(ctx_pane.update_from_turn, p),
+            )
+            mgr.subscribe(
+                "metrics.updated",
+                lambda p: _dispatch(ctx_pane.update_from_metrics, p),
             )
 
     # ── Actions ──────────────────────────────────────────────────────
@@ -936,12 +968,18 @@ class AruApp(App):
             chat.add_class("-hide-sidebar")
 
     def action_ctrl_c(self) -> None:
-        """Context-sensitive Ctrl+C.
+        """Context-sensitive Ctrl+C — matches REPL semantics.
 
         1. If the user has a text selection active → copy it (matches
            every other TUI: ``less``, ``htop``, shell readline, etc.).
-        2. Otherwise → interrupt any running agent turn and exit the
-           app (matches Ctrl+C in a REPL).
+        2. If an agent turn is running → abort the turn, keep the app
+           alive, and hand the prompt back to the user. This mirrors
+           the REPL where SIGINT during an agent run raises
+           ``KeyboardInterrupt`` inside ``run_agent_capture`` and drops
+           back to the readline prompt without exiting.
+        3. Only when the prompt is already idle (no selection, no
+           running turn) does Ctrl+C exit the app — same as hitting
+           Ctrl+C at an empty REPL prompt.
         """
         try:
             selected = self.screen.get_selected_text() or ""
@@ -963,8 +1001,24 @@ class AruApp(App):
             except Exception:
                 pass
             return
-        # No selection: behave like SIGINT — cancel work + quit.
-        self._abort_running_turn()
+        if self._busy:
+            # Mid-turn: interrupt the agent and return control to the
+            # user. The _run_turn finally clause resets ``_busy`` and
+            # the ThinkingIndicator; we just need to push a visible
+            # marker into the chat and refocus the input so the user
+            # can immediately type the follow-up.
+            self._abort_running_turn()
+            try:
+                from aru.tui.widgets.chat import ChatPane
+                self.query_one(ChatPane).add_system_message("Interrupted.")
+            except Exception:
+                pass
+            try:
+                self.query_one(Input).focus()
+            except Exception:
+                pass
+            return
+        # Idle prompt → exit, same as Ctrl+C at an empty REPL prompt.
         self.action_quit_app()
 
     def _abort_running_turn(self) -> None:

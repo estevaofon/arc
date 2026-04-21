@@ -87,9 +87,8 @@ async def test_copy_bindings_registered():
 @pytest.mark.asyncio
 async def test_ctrl_c_is_context_sensitive():
     """Ctrl+C is bound, but to ``ctrl_c`` — a context-sensitive action
-    that copies the current selection when present and otherwise quits
-    (matches standard TUI behaviour: select+Ctrl+C copies, bare Ctrl+C
-    interrupts)."""
+    matching the REPL: select+Ctrl+C copies; bare Ctrl+C during a turn
+    interrupts the agent; bare Ctrl+C at an idle prompt exits."""
     from aru.tui.app import AruApp
 
     keys = {b.key: b.action for b in AruApp.BINDINGS if hasattr(b, "key")}
@@ -98,14 +97,13 @@ async def test_ctrl_c_is_context_sensitive():
 
 
 @pytest.mark.asyncio
-async def test_ctrl_c_without_selection_quits(monkeypatch):
-    """No selection → Ctrl+C interrupts + quits."""
+async def test_ctrl_c_idle_quits(monkeypatch):
+    """No selection, no running turn → Ctrl+C exits (matches empty REPL prompt)."""
     from aru.tui.app import AruApp
 
     app = AruApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        # Stub out abort+exit so we can observe them without really quitting.
         called = {"abort": 0, "quit": 0}
         monkeypatch.setattr(
             app, "_abort_running_turn", lambda: called.__setitem__("abort", called["abort"] + 1)
@@ -113,15 +111,50 @@ async def test_ctrl_c_without_selection_quits(monkeypatch):
         monkeypatch.setattr(
             app, "action_quit_app", lambda: called.__setitem__("quit", called["quit"] + 1)
         )
-        # Ensure no selection is active.
         try:
             app.screen.clear_selection()
         except Exception:
             pass
+        app._busy = False
         app.action_ctrl_c()
         await pilot.pause()
-    assert called["abort"] == 1
+    # Idle prompt: no abort (nothing to abort), just exit.
+    assert called["abort"] == 0
     assert called["quit"] == 1
+
+
+@pytest.mark.asyncio
+async def test_ctrl_c_busy_interrupts_without_quitting(monkeypatch):
+    """Agent turn running → Ctrl+C aborts the turn, app stays alive."""
+    from aru.tui.app import AruApp
+    from aru.tui.widgets.chat import ChatMessageWidget, ChatPane
+
+    app = AruApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        called = {"abort": 0, "quit": 0}
+        monkeypatch.setattr(
+            app, "_abort_running_turn", lambda: called.__setitem__("abort", called["abort"] + 1)
+        )
+        monkeypatch.setattr(
+            app, "action_quit_app", lambda: called.__setitem__("quit", called["quit"] + 1)
+        )
+        try:
+            app.screen.clear_selection()
+        except Exception:
+            pass
+        app._busy = True
+        app.action_ctrl_c()
+        await pilot.pause()
+        chat = app.query_one(ChatPane)
+        system_msgs = [
+            m for m in chat.query(ChatMessageWidget) if m.role == "system"
+        ]
+    assert called["abort"] == 1
+    # Crucial: the app MUST NOT quit mid-turn — the user just wants the
+    # prompt back to type a correction.
+    assert called["quit"] == 0
+    assert any("Interrupted" in m.buffer for m in system_msgs)
 
 
 @pytest.mark.asyncio

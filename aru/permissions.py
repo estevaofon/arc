@@ -945,7 +945,11 @@ def check_permission(
         if choice == 0:
             allowed = True
         elif is_edit and choice == 1:
-            ctx.permission_mode = "acceptEdits"
+            # Route through set_permission_mode so the StatusPane picks
+            # up the change via the ``permission.mode.changed`` bus event
+            # — a direct ctx assignment here would silently keep the mode
+            # badge stuck on "default".
+            set_permission_mode("acceptEdits")
             ui.notify(
                 "Auto-accept edits enabled for this session (shift+tab to toggle).",
                 severity="info",

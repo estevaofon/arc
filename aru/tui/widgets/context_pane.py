@@ -157,6 +157,15 @@ class ContextPane(Vertical):
     def update_from_turn(self, _payload: dict) -> None:
         self.refresh_from_session()
 
+    def update_from_metrics(self, _payload: dict) -> None:
+        """Intra-turn refresh — fires after each internal LLM API call.
+
+        Keeps the "Last context window" breakdown and the progress bar
+        honest during long implementation phases, instead of waiting for
+        the whole turn to finish.
+        """
+        self.refresh_from_session()
+
     def update_from_model_change(self, new_ref: str) -> None:
         # Session already has the new ref; just re-render.
         self.refresh_from_session()

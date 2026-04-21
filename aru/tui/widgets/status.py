@@ -75,6 +75,15 @@ class StatusPane(Static):
     def update_from_mode_change(self, payload: dict) -> None:
         self.mode = str(payload.get("new_mode") or "default")
 
+    def update_from_metrics(self, _payload: dict) -> None:
+        """Intra-turn refresh after each internal LLM call (``metrics.updated``).
+
+        Pulls the live counters straight from the session — the payload
+        carries the same numbers but going through the session keeps the
+        cost-computation single-sourced (``estimated_cost`` property).
+        """
+        self._refresh_from_session()
+
     def update_from_cwd_change(self, payload: dict) -> None:
         new_cwd = payload.get("new_cwd") or ""
         self.cwd_short = os.path.basename(new_cwd) if new_cwd else ""

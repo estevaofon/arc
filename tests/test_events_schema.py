@@ -37,6 +37,7 @@ def test_all_event_types_mapped():
         "file.changed",
         "permission.denied",
         "permission.mode.changed",
+        "metrics.updated",
     }
     assert set(EVENT_MODELS.keys()) == expected_types
 

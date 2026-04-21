@@ -45,14 +45,117 @@ class TuiUI:
         cancel_value: int | None = None,
         details: Any = None,
     ) -> int | None:
+        # Two paths, chosen by whether we have preview material:
+        #
+        # With ``details`` (edit/write diff, plan summary) → mount the
+        #   preview AND the approval prompt inline in the ChatPane. The
+        #   user can scroll the main window freely to review the full
+        #   preview above, then Enter on the prompt below. Matches
+        #   OpenCode's UX: nothing gets hidden behind a screen-takeover
+        #   modal.
+        # Without ``details`` (/undo, generic menus) → compact modal is
+        #   fine; there's no context above it the user needs to read.
+        if details is not None:
+            return self._run_inline_choice(
+                options,
+                title=title,
+                default=default,
+                cancel_value=cancel_value,
+                details=details,
+            )
         modal = ChoiceModal(
             options,
             title=title,
             default=default,
             cancel_value=cancel_value,
-            details=details,
+            details=None,
         )
         return self._run_modal(modal)
+
+    def _run_inline_choice(
+        self,
+        options: Sequence[str],
+        *,
+        title: str | None,
+        default: int,
+        cancel_value: Any,
+        details: Any,
+        timeout_s: float = 300.0,
+    ) -> Any:
+        """Mount the preview + ``InlineChoicePrompt`` in the ChatPane.
+
+        Blocks the calling thread on a ``threading.Event`` until the
+        user answers, mirroring ``_run_modal`` so the sync call sites
+        (``check_permission``, plan approval) keep their contract.
+        """
+        import threading
+
+        from aru.tui.widgets.chat import ChatPane
+        from aru.tui.widgets.inline_choice import InlineChoicePrompt
+
+        done = threading.Event()
+        result: dict[str, Any] = {}
+
+        def _on_choice(value: Any) -> None:
+            result["value"] = value
+            done.set()
+
+        def _mount() -> None:
+            # Runs on the App loop — safe to touch widgets.
+            try:
+                chat = self.app.query_one(ChatPane)
+            except Exception as exc:
+                # No chat pane (edge case: App shutting down) — don't
+                # hang the caller; signal cancel.
+                result["value"] = cancel_value
+                result["error"] = f"ChatPane unavailable: {exc}"
+                done.set()
+                return
+            try:
+                chat.add_renderable(details, scrollable=False)
+                prompt = InlineChoicePrompt(
+                    options,
+                    title=title,
+                    default=default,
+                    cancel_value=cancel_value,
+                    on_choice=_on_choice,
+                )
+                chat.mount(prompt)
+                # Scroll so the TOP of the newly-mounted preview block
+                # is visible. Without this the auto-scroll-to-end of
+                # ChatPane would show only the bottom few lines of a
+                # long diff and the user would miss the start of it.
+                # We target the prompt itself so both the preview above
+                # AND the prompt land inside the viewport when the
+                # preview fits; for long previews, user scrolls up.
+                try:
+                    preview_widgets = list(chat.children)
+                    # The preview is the second-to-last child; the prompt is
+                    # the last. Anchor scroll to the preview's top.
+                    if len(preview_widgets) >= 2:
+                        preview_widgets[-2].scroll_visible(
+                            animate=False, top=True
+                        )
+                except Exception:
+                    pass
+            except Exception as exc:
+                result["value"] = cancel_value
+                result["error"] = f"mount failed: {exc}"
+                done.set()
+
+        try:
+            self.app.call_from_thread(_mount)
+        except Exception as exc:
+            raise RuntimeError(
+                f"TuiUI inline-choice dispatch failed: "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
+
+        if not done.wait(timeout=timeout_s):
+            raise RuntimeError(
+                f"TuiUI inline-choice timed out after {timeout_s:.0f}s"
+            )
+        return result.get("value")
 
     # ── confirm ───────────────────────────────────────────────────────
 

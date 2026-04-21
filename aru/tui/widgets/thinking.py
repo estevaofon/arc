@@ -41,6 +41,9 @@ class ThinkingIndicator(Widget):
         height: 1;
         color: $text-muted;
         padding: 0 1;
+        /* Breathing room above the rotating phrase so it doesn't glue
+           itself to the last chat message when the agent starts thinking. */
+        margin-top: 1;
     }
     ThinkingIndicator.-busy {
         display: block;

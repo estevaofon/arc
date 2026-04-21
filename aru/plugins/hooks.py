@@ -71,6 +71,11 @@ VALID_HOOKS = frozenset({
     # Turn lifecycle (Tier 2 #3)
     "turn.start",                # Beginning of runner.prompt for a new user turn
     "turn.end",                  # End of runner.prompt; payload has assistant reply + metrics
+
+    # Intra-turn observability
+    "metrics.updated",           # After every internal LLM API call (cache_patch);
+                                 # lets the TUI refresh tokens/cost mid-turn so long
+                                 # implementation runs don't sit silent for minutes.
 })
 
 

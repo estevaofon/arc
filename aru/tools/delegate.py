@@ -208,7 +208,13 @@ async def delegate_task(
         # setup cost). After the check, we fork into the subagent ctx.
         from aru.permissions import check_permission
         _agent_name_pre = str(agent_name).strip() if agent_name else "generic"
-        if not check_permission(
+        # Async tool running on the App loop — hop to a worker thread so
+        # the TUI permission modal can actually resolve. Calling the
+        # sync ``check_permission`` directly would deadlock the loop
+        # (modal callback can't fire while the loop is blocked).
+        import asyncio as _asyncio
+        if not await _asyncio.to_thread(
+            check_permission,
             "delegate_task",
             _agent_name_pre,
             f"delegate to sub-agent: {_agent_name_pre}",

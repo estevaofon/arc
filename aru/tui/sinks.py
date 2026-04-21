@@ -57,11 +57,14 @@ class TextualBusSink:
     ) -> None:
         self._labels[tool_id] = label
         # Finalize the currently-streaming assistant bubble before the
-        # tool indicator, then re-open a new bubble for any post-tool
-        # text — matches the text→tool→text flow of the Rich sink.
+        # tool indicator. Do NOT pre-open a new bubble here — back-to-back
+        # tool calls would otherwise leave an empty assistant widget
+        # between them that still contributes ``margin-bottom: 1``,
+        # showing up as a blank row between consecutive tool rows.
+        # ``append_assistant_delta`` lazily spawns a fresh bubble when
+        # (and only when) post-tool text actually arrives.
         self._call(self.chat.finalize_assistant_message)
         self._call(self.chat.add_tool_call, tool_id=tool_id, label=label)
-        self._call(self.chat.start_assistant_message)
 
     def on_tool_completed(
         self,
