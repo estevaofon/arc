@@ -281,7 +281,13 @@ def handle_memory_command(args: str, session) -> None:
             return
 
         if sub == "clear":
-            if not ask_yes_no("Delete all project memory? (cannot be undone)"):
+            # E7: route through ctx.ui so TUI gets a ConfirmModal.
+            from aru.permissions import _resolve_ui
+            from aru.runtime import get_ctx
+            ui = _resolve_ui(get_ctx())
+            if not ui.confirm(
+                "Delete all project memory? (cannot be undone)", default=False
+            ):
                 console.print("[dim]Cancelled.[/dim]")
                 return
             count = clear_memory(project_root)

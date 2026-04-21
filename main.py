@@ -25,6 +25,15 @@ def main():
         else:
             resume_id = "last"
 
+    # TUI mode — route to Textual App instead of REPL
+    if "--tui" in args:
+        from aru.tui import run_tui
+        try:
+            asyncio.run(run_tui(skip_permissions=skip_permissions, resume_id=resume_id))
+        except (KeyboardInterrupt, asyncio.CancelledError, SystemExit):
+            pass
+        return
+
     try:
         asyncio.run(run_cli(skip_permissions=skip_permissions, resume_id=resume_id))
     except (KeyboardInterrupt, asyncio.CancelledError, SystemExit):

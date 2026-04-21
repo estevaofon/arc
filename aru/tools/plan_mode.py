@@ -54,17 +54,23 @@ def _prompt_plan_approval(plan_steps: list, n_steps: int) -> tuple[bool, str]:
         except Exception:
             pass
 
-    ctx.console.print()
+    # Build the approval panel as a single renderable so it survives the
+    # REPL/TUI split. The TUI modal renders this inside the ChoiceModal;
+    # the REPL ReplUI prints it above the menu.
+    from rich.console import Group
+    details_parts: list = []
     if plan_steps:
-        ctx.console.print(_render_plan_steps(plan_steps))
-    ctx.console.print(Panel(
+        details_parts.append(_render_plan_steps(plan_steps))
+    details_parts.append(Panel(
         f"Proposed plan with [bold]{n_steps}[/bold] step(s). Approve execution?",
         title="[bold cyan]Plan approval[/bold cyan]",
         border_style="cyan",
         expand=False,
     ))
+    details = Group(*details_parts)
 
-    from aru.select import select_option
+    from aru.permissions import _resolve_ui
+    ui = _resolve_ui(ctx)
     options = [
         "Approve and execute",
         "Reject (revise with feedback)",
@@ -72,11 +78,12 @@ def _prompt_plan_approval(plan_steps: list, n_steps: int) -> tuple[bool, str]:
     ]
 
     try:
-        choice = select_option(
+        choice = ui.ask_choice(
             options,
-            title="Choose an option (↑↓ to move, Enter to confirm):",
+            title="Plan approval:",
             default=0,
             cancel_value=2,  # bare reject on Esc/Ctrl+C
+            details=details,
         )
     finally:
         if ctx.live:
@@ -91,8 +98,9 @@ def _prompt_plan_approval(plan_steps: list, n_steps: int) -> tuple[bool, str]:
     if choice == 1:
         # Collect free-text feedback for the model to revise against.
         try:
-            feedback = ctx.console.input(
-                "[bold cyan]Tell Aru what to revise:[/bold cyan] "
+            feedback = ui.ask_text(
+                "[bold cyan]Tell Aru what to revise:[/bold cyan] ",
+                default="",
             ).strip()
         except BaseException:
             feedback = ""

@@ -6,16 +6,9 @@ import asyncio
 import os
 from dataclasses import dataclass, field
 
-from rich.live import Live
 from rich.markdown import Markdown
-from rich.text import Text
 
-from aru.display import (
-    StatusBar,
-    StreamingDisplay,
-    _format_tool_label,
-    console,
-)
+from aru.display import console
 
 
 # Categories of tools that modify files (for highlighting in history)
@@ -343,7 +336,7 @@ async def prompt(input: PromptInput) -> AgentRunResult:
 
 
 async def run_agent_capture(agent, message: str, session=None, lightweight: bool = False,
-                           images: list | None = None) -> AgentRunResult:
+                           images: list | None = None, *, sink=None) -> AgentRunResult:
     """Run agent with async streaming display and parallel tool execution.
 
     Args:
@@ -352,38 +345,23 @@ async def run_agent_capture(agent, message: str, session=None, lightweight: bool
         session: Optional session for history and context.
         lightweight: If True, skip tree/git/plan context and history (for executor steps).
         images: Optional list of agno.media.Image objects to attach.
+        sink: Optional StreamSink. Defaults to ``RichLiveSink`` (REPL mode).
+            Pass ``TextualBusSink`` when running inside the Textual App
+            (E3b) to route events to the ChatPane instead of Rich Live.
 
     Returns:
         AgentRunResult with text output and list of tool call labels.
     """
     from agno.models.message import Message
-    from agno.run.agent import (
-        RunContentEvent,
-        RunOutput,
-        ToolCallCompletedEvent,
-        ToolCallStartedEvent,
-    )
-    from aru.history_blocks import (
-        text_block, tool_use_block, tool_result_block, to_agno_messages,
-    )
+    from aru.history_blocks import text_block, to_agno_messages
 
-    console.print()
+    # Skip the leading blank line in TUI mode — ChatPane manages its own
+    # spacing. Only print for the REPL path (no custom sink).
+    if sink is None:
+        console.print()
     final_content = None
     collected_tool_calls: list[str] = []
     _stalled = False
-
-    # Snapshot the parent's live/display BEFORE the try block so the except
-    # clauses can always restore them — a nested run_agent_capture (e.g. the
-    # build agent calling enter_plan_mode) must not clobber the outer Live
-    # handle, otherwise downstream permission prompts hang.
-    try:
-        from aru.runtime import get_ctx as _get_ctx_outer
-        _outer_ctx = _get_ctx_outer()
-        _parent_live = getattr(_outer_ctx, "live", None)
-        _parent_display = getattr(_outer_ctx, "display", None)
-    except (LookupError, AttributeError):
-        _parent_live = None
-        _parent_display = None
 
     # Structured capture: the stream loop appends to these in event order.
     # On stream completion we persist them to session.history as blocks.
@@ -403,12 +381,18 @@ async def run_agent_capture(agent, message: str, session=None, lightweight: bool
             assistant_blocks.append(text_block(new_text))
         _flushed_text_len = len(accumulated_text)
 
+    # E3a: RichLiveSink owns the Rich Live + StreamingDisplay and installs
+    # itself on ctx.live/ctx.display via enter(). enter() must run inside
+    # the try/except so a LookupError on get_ctx during setup is caught.
+    # Caller may pre-supply a sink (e.g. TextualBusSink from E3b) — in
+    # that case we honour it and skip building a RichLiveSink.
+    if sink is None:
+        from aru.sinks import RichLiveSink
+        sink = RichLiveSink(console=console)
+    from aru.streaming import run_stream
+
     try:
         from aru.runtime import get_ctx
-
-        status = StatusBar(interval=3.0)
-        display = StreamingDisplay(status)
-        tracker = display.tool_tracker
 
         # Build message — environment context (tree/git/cwd) is now in the
         # system prompt (agent instructions) so it's cacheable across turns.
@@ -478,201 +462,43 @@ async def run_agent_capture(agent, message: str, session=None, lightweight: bool
             agent_input = run_message
 
         run_output = None
-        with Live(display, console=console, refresh_per_second=10) as live:
-            ctx = get_ctx()
-            ctx.live = live
-            ctx.display = display
-            accumulated = ""
-            _stall_counter = 0
-            _stalled = False
-            _STALL_LIMIT = 20
-            arun_kwargs = dict(stream=True, stream_events=True, yield_run_output=True)
-            if isinstance(agent_input, str) and images:
-                arun_kwargs["images"] = images
-
-            # Max-tokens recovery loop. A single run may cycle through
-            # `agent.arun()` multiple times if the provider truncates at
-            # max_tokens — we inject a meta user message asking the model
-            # to resume and re-stream into the *same* assistant_blocks /
-            # accumulated buffers so the persisted turn reads as one
-            # continuous message. Mirrors Claude Code's query.ts loop.
-            from aru.cache_patch import get_last_stop_reason, reset_last_stop_reason
-            current_input = agent_input
-            recovery_attempts_left = _MAX_TOKENS_RECOVERY_ATTEMPTS
-            while True:
-                reset_last_stop_reason()
-                async for event in agent.arun(current_input, **arun_kwargs):
-                    if isinstance(event, RunOutput):
-                        run_output = event
-                        break
-
-                    if isinstance(event, ToolCallStartedEvent):
-                        _stall_counter = 0
-                        if hasattr(event, "tool") and event.tool:
-                            tool_name = event.tool.tool_name or "tool"
-                            tool_args = event.tool.tool_args or None
-                            tool_id = getattr(event.tool, "tool_call_id", None) or tool_name
-                        else:
-                            tool_name = getattr(event, "tool_name", "tool")
-                            tool_args = getattr(event, "tool_args", None)
-                            tool_id = getattr(event, "tool_call_id", None) or tool_name
-                        label = _format_tool_label(tool_name, tool_args)
-                        collected_tool_calls.append(label)
-                        # Structured capture: flush any text streamed so far into
-                        # a text block, then append the tool_use block. This
-                        # preserves the order text → tool call → more text.
-                        _flush_pending_text(accumulated)
-                        assistant_blocks.append(
-                            tool_use_block(tool_id, tool_name, tool_args if isinstance(tool_args, dict) else {})
-                        )
-                        pending_tool_uses[tool_id] = assistant_blocks[-1]
-                        if accumulated[display._flushed_len:]:
-                            display.content = None
-                            live.stop()
-                            display.flush()
-                            live.start()
-                            live._live_render._shape = None
-                        tracker.start(tool_id, label)
-                        status.set_text(f"{label}...")
-                        live.update(display)
-                        # Event: tool.called
-                        await _publish_event("tool.called", {
-                            "tool_name": tool_name, "tool_id": tool_id,
-                            "args": tool_args if isinstance(tool_args, dict) else {},
-                        })
-
-                    elif isinstance(event, ToolCallCompletedEvent):
-                        _stall_counter = 0
-                        if hasattr(event, "tool") and event.tool:
-                            tool_id = getattr(event.tool, "tool_call_id", None) or getattr(event.tool, "tool_name", "tool")
-                            tool_result_text = getattr(event.tool, "result", None)
-                        else:
-                            tool_id = getattr(event, "tool_call_id", None) or getattr(event, "tool_name", "tool")
-                            tool_result_text = getattr(event, "content", None)
-
-                        # Structured capture: bundle the tool_result into the
-                        # most recent tool-role message (same "round" of tool
-                        # calls) so they become a single user-side follow-up
-                        # in Anthropic's wire format.
-                        if tool_id in pending_tool_uses:
-                            result_str = str(tool_result_text) if tool_result_text is not None else ""
-                            tr_block = tool_result_block(tool_id, result_str)
-                            if tool_result_msgs and tool_result_msgs[-1]["_open"]:
-                                tool_result_msgs[-1]["content"].append(tr_block)
-                            else:
-                                tool_result_msgs.append({
-                                    "role": "tool",
-                                    "content": [tr_block],
-                                    "_open": True,
-                                })
-                            pending_tool_uses.pop(tool_id, None)
-
-                        # Event: tool.completed
-                        await _publish_event("tool.completed", {
-                            "tool_id": tool_id,
-                            "result_length": len(str(tool_result_text)) if tool_result_text else 0,
-                        })
-                        result = tracker.complete(tool_id)
-                        for label, duration in tracker.pop_completed():
-                            dur_str = f" {duration:.1f}s" if duration >= 0.5 else ""
-                            live.console.print(Text.assemble(
-                                ("  ", ""),
-                                ("\u2713 ", "bold green"),
-                                (label, "dim"),
-                                (dur_str, "dim cyan"),
-                            ))
-                        if not tracker.active_labels:
-                            status.resume_cycling()
-                            # Close the current tool_result round — any further
-                            # tool calls start a new round.
-                            if tool_result_msgs and tool_result_msgs[-1]["_open"]:
-                                tool_result_msgs[-1]["_open"] = False
-                            # Flush coalesced plan-panel render. Multiple
-                            # update_plan_step calls in the same batch (and any
-                            # enter_plan_mode that replaces the plan mid-batch)
-                            # collapse into a single panel showing final state.
-                            try:
-                                from aru.tools.tasklist import flush_plan_render
-                                flush_plan_render(session)
-                            except Exception:
-                                pass
-                        live.update(display)
-
-                    elif isinstance(event, RunContentEvent):
-                        _stall_counter = 0
-                        if hasattr(event, "content") and event.content:
-                            accumulated += event.content
-                            unflushed = accumulated[display._flushed_len:]
-
-                            if unflushed.count("\n") > 15:
-                                break_point = unflushed.rfind("\n\n")
-                                if break_point == -1:
-                                    break_point = unflushed.rfind("\n")
-
-                                if break_point != -1:
-                                    chunk = unflushed[:break_point + 1]
-                                    if chunk.count("```") % 2 == 0:
-                                        display.content = None
-                                        live.stop()
-                                        console.print(Markdown(chunk))
-                                        display._flushed_len += len(chunk)
-                                        live.start()
-                                        live._live_render._shape = None
-
-                            display.set_content(accumulated)
-                            live.update(display)
-
-                    else:
-                        _stall_counter += 1
-                        if _stall_counter >= _STALL_LIMIT:
-                            _stalled = True
-                            live.console.print(
-                                "[yellow]Agent stalled (tool call limit likely reached). "
-                                "Moving on.[/yellow]"
-                            )
-                            break
-
-                # Stream for this attempt finished. If we weren't truncated
-                # at the output cap, or we've exhausted recovery attempts,
-                # stop here. Otherwise build a recovery input and loop.
-                if get_last_stop_reason() != "max_tokens":
-                    break
-                if _stalled:
-                    break
-                if recovery_attempts_left <= 0:
-                    live.console.print(
-                        f"[yellow]Output still truncated after "
-                        f"{_MAX_TOKENS_RECOVERY_ATTEMPTS} recovery attempts. "
-                        f"Persisting the turn as-is.[/yellow]"
-                    )
-                    break
-                current_input = _prepare_recovery_input(
-                    agent=agent,
-                    prior_history=history_messages,
-                    user_message=run_message,
-                    assistant_blocks=assistant_blocks,
-                    tool_result_msgs=tool_result_msgs,
-                    pending_tool_uses=pending_tool_uses,
-                    accumulated_text=accumulated,
-                    flush_pending_text=_flush_pending_text,
-                    images=images,
-                )
-                recovery_attempts_left -= 1
-                attempt_no = _MAX_TOKENS_RECOVERY_ATTEMPTS - recovery_attempts_left
-                live.console.print(
-                    f"[dim]Output truncated at cap — resuming "
-                    f"({attempt_no}/{_MAX_TOKENS_RECOVERY_ATTEMPTS})...[/dim]"
-                )
-                # Clear run_output so the next pass repopulates it.
-                run_output = None
-
-            # Clear live content before the Live context exits so its final
-            # render doesn't duplicate text that we print explicitly below.
-            display.content = None
-
-        # Restore the parent's live/display (or None if this was the outermost call).
-        ctx.live = _parent_live
-        ctx.display = _parent_display
+        ctx = get_ctx()
+        sink.enter()
+        try:
+            # E3a: the stream loop is extracted to `streaming.run_stream`
+            # and shared with the TUI path (E3b, TextualBusSink). The
+            # RichLiveSink owns the Rich Live context and installs itself
+            # on ctx.live/ctx.display via enter().
+            from aru.streaming import run_stream as _run_stream
+            stream_state = await _run_stream(
+                agent,
+                agent_input,
+                sink=sink,
+                session=session,
+                images=images,
+                history_messages=history_messages,
+                user_message=run_message,
+                assistant_blocks=assistant_blocks,
+                tool_result_msgs=tool_result_msgs,
+                pending_tool_uses=pending_tool_uses,
+                flush_pending_text=_flush_pending_text,
+                publish_event=_publish_event,
+                max_recovery_attempts=_MAX_TOKENS_RECOVERY_ATTEMPTS,
+                recovery_prompt=_MAX_TOKENS_RECOVERY_PROMPT,
+                prepare_recovery_input=_prepare_recovery_input,
+            )
+            accumulated = stream_state.accumulated
+            _stalled = stream_state.stalled
+            collected_tool_calls = stream_state.collected_tool_calls
+            # E3a fix: run_output is captured inside run_stream and persisted
+            # on the StreamState. Without this, session.track_tokens was never
+            # invoked and StatusPane stayed at 0 tokens forever.
+            run_output = stream_state.run_output or getattr(agent, "run_output", None)
+        finally:
+            sink.exit()
+        # RichLiveSink exposes .display for trailing markdown flush; the TUI
+        # sink (TextualBusSink) doesn't — ChatPane handles its own rendering.
+        display = getattr(sink, "display", None)
 
         # Flush any trailing text into a final text block, then persist the
         # assistant turn + tool_result messages to session.history as
@@ -698,8 +524,17 @@ async def run_agent_capture(agent, message: str, session=None, lightweight: bool
                     from aru.tools.plan_mode import _prompt_plan_approval
                     task_label = plan_text.split("\n", 1)[0][:80]
                     session.set_plan(task=task_label, plan_content=plan_text)
-                    approved, feedback = _prompt_plan_approval(
-                        session.plan_steps, len(session.plan_steps)
+                    # E7: this prompt runs on the runner coroutine, not a
+                    # tool thread. ``_prompt_plan_approval`` is sync and in
+                    # TUI mode will invoke ``TuiUI.ask_choice`` which uses
+                    # ``call_from_thread``; that would deadlock if we
+                    # called it directly on the App's loop. Wrapping in
+                    # ``to_thread`` hops to a worker thread first so the
+                    # modal dispatch path is uniform across paths.
+                    approved, feedback = await asyncio.to_thread(
+                        _prompt_plan_approval,
+                        session.plan_steps,
+                        len(session.plan_steps),
                     )
                     session._plan_render_pending = False
                     if approved:
@@ -815,19 +650,25 @@ async def run_agent_capture(agent, message: str, session=None, lightweight: bool
         except Exception:
             pass  # extractor guards internally; swallow any unexpected raise
 
-        remaining = (final_content or "")[display._flushed_len:]
-        if remaining:
-            console.print(Markdown(remaining))
+        # Trailing markdown flush — REPL only. The TUI ChatPane already
+        # received the full content via on_stream_finished.
+        if display is not None:
+            remaining = (final_content or "")[display._flushed_len:]
+            if remaining:
+                console.print(Markdown(remaining))
 
     except (KeyboardInterrupt, asyncio.CancelledError):
-        ctx = get_ctx()
-        ctx.live = _parent_live
-        ctx.display = _parent_display
+        # sink.exit() restores ctx.live/ctx.display via its own finally
+        try:
+            sink.exit()
+        except Exception:
+            pass
         console.print("\n[yellow]Interrupted.[/yellow]")
     except Exception as e:
-        ctx = get_ctx()
-        ctx.live = _parent_live
-        ctx.display = _parent_display
+        try:
+            sink.exit()
+        except Exception:
+            pass
         from rich.markup import escape
         console.print(f"[red]Error: {escape(str(e))}[/red]")
 
@@ -840,5 +681,37 @@ async def run_agent_capture(agent, message: str, session=None, lightweight: bool
         if steps and any(s.status == "pending" for s in steps):
             session._pending_plan_warning = True
 
-    console.print()
+    # REPL adds a trailing blank for separation; TUI ChatPane handles its own.
+    if sink is None or sink.__class__.__name__ != "TextualBusSink":
+        console.print()
     return AgentRunResult(content=final_content, tool_calls=collected_tool_calls, stalled=_stalled)
+
+
+async def run_agent_capture_tui(
+    agent,
+    message: str,
+    *,
+    session=None,
+    lightweight: bool = False,
+    images: list | None = None,
+    app,
+    chat_pane,
+) -> AgentRunResult:
+    """TUI variant of ``run_agent_capture`` — routes events to ChatPane.
+
+    Constructs a ``TextualBusSink`` and delegates to ``run_agent_capture``.
+    Kept as a thin wrapper so call sites in the TUI path are explicit and
+    we can grow TUI-specific behaviour (e.g. progress widgets) without
+    cluttering the REPL entry point.
+    """
+    from aru.tui.sinks import TextualBusSink
+
+    sink = TextualBusSink(app=app, chat_pane=chat_pane)
+    return await run_agent_capture(
+        agent,
+        message,
+        session=session,
+        lightweight=lightweight,
+        images=images,
+        sink=sink,
+    )

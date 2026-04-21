@@ -502,7 +502,7 @@ class TestCheckPermissionInteractive:
 
         # Arrow-key menu returns index 2 for "No" on edit prompts (the
         # third option). Feedback input stays textual — empty here.
-        monkeypatch.setattr("aru.permissions.select_option", lambda *a, **kw: 2)
+        monkeypatch.setattr("aru.select.select_option", lambda *a, **kw: 2)
         monkeypatch.setattr(ctx.console, "input", lambda _: "")
 
         result = check_permission("edit", "src/app.py", "editing src/app.py")
@@ -513,7 +513,7 @@ class TestCheckPermissionInteractive:
         ctx = get_ctx()
         ctx.skip_permissions = False
 
-        monkeypatch.setattr("aru.permissions.select_option", lambda *a, **kw: 2)
+        monkeypatch.setattr("aru.select.select_option", lambda *a, **kw: 2)
         monkeypatch.setattr(ctx.console, "input", lambda _: "use a different approach")
 
         result = check_permission("edit", "src/app.py", "editing src/app.py")
@@ -526,7 +526,7 @@ class TestCheckPermissionInteractive:
         ctx.permission_mode = "default"
 
         # Index 1 = "Yes, and auto-accept edits" on edit prompts.
-        monkeypatch.setattr("aru.permissions.select_option", lambda *a, **kw: 1)
+        monkeypatch.setattr("aru.select.select_option", lambda *a, **kw: 1)
 
         result = check_permission("edit", "main.py", "editing main.py")
         assert result is True
@@ -541,7 +541,7 @@ class TestCheckPermissionInteractive:
         ctx.skip_permissions = False
 
         # Index 0 = "Yes" on both edit and non-edit prompts.
-        monkeypatch.setattr("aru.permissions.select_option", lambda *a, **kw: 0)
+        monkeypatch.setattr("aru.select.select_option", lambda *a, **kw: 0)
 
         result = check_permission("edit", "src/app.py", "editing")
         assert result is True
@@ -555,7 +555,7 @@ class TestCheckPermissionInteractive:
         # by having it return the reject_index directly (2 for edits).
         def _cancel(*args, **kwargs):
             return kwargs.get("cancel_value", None)
-        monkeypatch.setattr("aru.permissions.select_option", _cancel)
+        monkeypatch.setattr("aru.select.select_option", _cancel)
         monkeypatch.setattr(ctx.console, "input", lambda _: "")
 
         result = check_permission("edit", "main.py", "editing")
@@ -569,7 +569,7 @@ class TestCheckPermissionInteractive:
         # returns cancel_value, which is reject_index for the caller.
         def _cancel(*args, **kwargs):
             return kwargs.get("cancel_value", None)
-        monkeypatch.setattr("aru.permissions.select_option", _cancel)
+        monkeypatch.setattr("aru.select.select_option", _cancel)
         monkeypatch.setattr(ctx.console, "input", lambda _: "")
 
         result = check_permission("edit", "main.py", "editing")
@@ -581,7 +581,7 @@ class TestCheckPermissionInteractive:
         ctx = get_ctx()
         ctx.skip_permissions = False
 
-        monkeypatch.setattr("aru.permissions.select_option", lambda *a, **kw: 0)
+        monkeypatch.setattr("aru.select.select_option", lambda *a, **kw: 0)
 
         result = check_permission("edit", "main.py", "editing")
         assert result is True
@@ -1265,7 +1265,7 @@ class TestCheckPermissionMultiPattern:
             call_count["n"] += 1
             return 0  # "Yes"
 
-        monkeypatch.setattr("aru.permissions.select_option", _fake_select)
+        monkeypatch.setattr("aru.select.select_option", _fake_select)
 
         # Two "ask" subjects (write category defaults to ask) → single prompt
         result = check_permission("write", ["a.py", "b.py", "c.py"], "batch write")
@@ -1283,7 +1283,7 @@ class TestCheckPermissionMultiPattern:
             prompted["fired"] = True
             return 0
 
-        monkeypatch.setattr("aru.permissions.select_option", _should_not_fire)
+        monkeypatch.setattr("aru.select.select_option", _should_not_fire)
 
         result = check_permission("write", ["a.py", ".env"], "batch")
         assert result is False

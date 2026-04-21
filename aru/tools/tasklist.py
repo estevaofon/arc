@@ -53,14 +53,39 @@ def _render_task_list(tasks: list[dict]) -> Panel:
 
 
 def _show(panel: Panel) -> None:
-    """Display panel using the active display or console."""
+    """Display panel using the active display, Live, TUI chat pane, or console.
+
+    TUI mode: Rich's global console writes to stdout which Textual owns,
+    so we route the panel into the ChatPane via ``call_from_thread``
+    instead (matches how TextualBusSink hands rich renderables off to
+    the app loop).
+    """
     ctx = get_ctx()
     if ctx.display and hasattr(ctx.display, "show_permission"):
         ctx.display.show_permission(panel)
-    elif ctx.live:
+        return
+    if ctx.live:
         ctx.live.console.print(panel)
-    else:
-        ctx.console.print(panel)
+        return
+    tui_app = getattr(ctx, "tui_app", None)
+    if tui_app is not None:
+        try:
+            from aru.tui.widgets.chat import ChatPane
+            chat = tui_app.query_one(ChatPane)
+            # Scrollable=True so a big panel (diff preview / task list /
+            # plan steps) stays contained — the user can scroll inside
+            # it without losing the chat stream above/below.
+            kwargs = {"scrollable": True}
+            try:
+                tui_app.call_from_thread(
+                    chat.add_renderable, panel, **kwargs
+                )
+            except Exception:
+                chat.add_renderable(panel, **kwargs)
+            return
+        except Exception:
+            pass
+    ctx.console.print(panel)
 
 
 def create_task_list(tasks: list[str]) -> str:

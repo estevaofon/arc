@@ -30,6 +30,19 @@ from rich.text import Text
 from aru.runtime import get_ctx
 from aru.select import select_option
 
+
+def _resolve_ui(ctx):
+    """Return ``ctx.ui`` or install a ``ReplUI`` on-the-fly.
+
+    Keeps migrated call sites (``check_permission``, plan approval, etc.)
+    functional in legacy tests that never set ``ctx.ui`` explicitly.
+    """
+    ui = getattr(ctx, "ui", None)
+    if ui is not None:
+        return ui
+    from aru.ui import install_repl_ui_on_ctx
+    return install_repl_ui_on_ctx(ctx)
+
 PermissionAction = Literal["allow", "ask", "deny"]
 
 VALID_ACTIONS: set[str] = {"allow", "ask", "deny"}
@@ -397,8 +410,15 @@ def set_permission_mode(mode: str) -> str:
     ctx = get_ctx()
     if mode not in _MODE_CYCLE:
         mode = "default"
+    old_mode = ctx.permission_mode
     ctx.permission_mode = mode
     ctx.skip_permissions = (mode == "yolo")
+    if old_mode != mode:
+        from aru.runtime import _schedule_publish
+        _schedule_publish(
+            "permission.mode.changed",
+            {"old_mode": old_mode, "new_mode": mode},
+        )
     return mode
 
 
@@ -880,20 +900,20 @@ def check_permission(
         if all(action == "allow" for action, _ in results2):
             return True
 
-        # Pause Live and flush already-streamed content
+        # Pause Live and flush already-streamed content (REPL only; in
+        # TUI mode ctx.live is None and the ChatPane doesn't need this).
         if ctx.live:
             ctx.live.stop()
         if ctx.display:
             ctx.display.flush()
 
         title = f"{category}: {display_subject}" if display_subject else category
-        ctx.console.print()
-        ctx.console.print(Panel(
+        panel = Panel(
             display_details,
             title=f"[bold yellow]{title}[/bold yellow]",
             border_style="yellow",
             expand=False,
-        ))
+        )
 
         is_edit = category in ("edit", "write")
         if is_edit:
@@ -902,7 +922,7 @@ def check_permission(
                 "Yes, and auto-accept edits (shift+tab)",
                 "No, and tell Aru what to do differently",
             ]
-            reject_index = 2  # "No" option
+            reject_index = 2
         else:
             options = [
                 "Yes",
@@ -910,29 +930,33 @@ def check_permission(
             ]
             reject_index = 1
 
-        # Arrow-key menu — pauses stdin during render, returns the chosen
-        # index (or reject_index on cancel so Esc/Ctrl+C behaves like "No").
-        choice = select_option(
+        # Route through ctx.ui — REPL=ReplUI (select_option + console),
+        # TUI=TuiUI (ChoiceModal via call_from_thread). Fallback installs
+        # ReplUI on ctx so legacy tests without a TUI still work.
+        ui = _resolve_ui(ctx)
+        choice = ui.ask_choice(
             options,
-            title="Choose an option (↑↓ to move, Enter to confirm):",
+            title="Choose an option:",
             default=0,
             cancel_value=reject_index,
+            details=panel,
         )
 
         if choice == 0:
             allowed = True
         elif is_edit and choice == 1:
             ctx.permission_mode = "acceptEdits"
-            ctx.console.print(
-                "[dim]Auto-accept edits enabled for this session (shift+tab to toggle).[/dim]"
+            ui.notify(
+                "Auto-accept edits enabled for this session (shift+tab to toggle).",
+                severity="info",
             )
             allowed = True
         else:
             # Rejection path — optionally collect feedback for the model.
-            # Catch BaseException so tests and Ctrl+C during feedback don't crash.
             try:
-                feedback = ctx.console.input(
-                    "[bold yellow]Tell Aru what to do differently (enter to skip):[/bold yellow] "
+                feedback = ui.ask_text(
+                    "[bold yellow]Tell Aru what to do differently (enter to skip):[/bold yellow] ",
+                    default="",
                 ).strip()
             except BaseException:
                 feedback = ""

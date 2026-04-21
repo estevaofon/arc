@@ -21,7 +21,30 @@ aru/
 ├── cli.py              # Main REPL loop, argument parsing, entry point
 ├── agent_factory.py    # Agent instantiation from AgentSpec (catalog-driven)
 ├── runtime.py          # RuntimeContext via contextvars; fork_ctx() for sub-agents
-├── runner.py           # Agent execution orchestration with streaming
+├── runner.py           # Agent execution orchestration (uses StreamSink)
+├── streaming.py        # StreamSink protocol + run_stream (shared REPL/TUI loop)
+├── sinks.py            # RichLiveSink — REPL StreamSink (Rich Live + StreamingDisplay)
+├── events.py           # Typed pydantic event schemas for plugin_manager.publish
+├── ui.py               # UIAdapter protocol + ReplUI (ctx.ui in REPL mode)
+├── tui/
+│   ├── app.py          # Textual TUI shell (aru --tui) — AruApp + run_tui
+│   ├── ui.py           # TuiUI — UIAdapter backed by Textual ModalScreens
+│   ├── sinks.py        # TextualBusSink — StreamSink routing to ChatPane
+│   ├── slash_bridge.py # Reuse REPL handle_* handlers in TUI (E6b)
+│   ├── screens/
+│   │   ├── choice.py     # ChoiceModal — numbered option menu
+│   │   ├── confirm.py    # ConfirmModal — yes/no dialog
+│   │   ├── search.py     # SearchScreen — free-text chat history filter
+│   │   └── text_input.py # TextInputModal — free-form text prompt
+│   └── widgets/
+│       ├── chat.py     # ChatPane + ChatMessageWidget (reactive streaming)
+│       ├── completer.py # SlashCompleter — dropdown for /cmds and @file
+│       ├── context_pane.py # ContextPane — top sidebar, context-window breakdown
+│       ├── header.py   # AruHeader — branded top bar
+│       ├── loaded_pane.py  # LoadedPane — bottom sidebar, boot breadcrumbs
+│       ├── status.py   # StatusPane — session/model/tokens/cost/mode bottom bar
+│       ├── thinking.py # ThinkingIndicator — rotating phrase + spinner while busy
+│       └── tools.py    # ToolsPane — legacy live tool-call sidebar (not mounted)
 ├── session.py          # Session state, persistence, plan tracking
 ├── commands.py         # Slash commands, help display, shell execution
 ├── completers.py       # Input completions, paste detection, @file mentions
@@ -298,6 +321,63 @@ The project uses a local `.venv` virtual environment. When using the `bash` tool
 - `.gitignore` respected in all file discovery
 - Sessions persisted as JSON in `.aru/sessions/`
 - Project language: Portuguese comments in some places; code in English
+
+## TUI architecture (``aru --tui``)
+
+The Textual TUI is opt-in and lives side-by-side with the REPL. Both
+modes share 100% of the agent/tool/permission/session machinery; only
+presentation differs.
+
+**Entry points.** ``aru --tui`` (via ``cli.main`` / ``main.py``) routes
+to ``aru.tui.run_tui`` which performs the same bootstrap as the REPL
+(``init_ctx``, config, session, plugin manager, permission rules) and
+then awaits ``AruApp.run_async()``.
+
+**Event bus.** Typed pydantic models in ``aru/events.py`` describe every
+``plugin_manager.publish(...)`` payload. The manager coerces BaseModel →
+dict on publish so legacy plugins that consume dicts keep working.
+Widgets subscribe to the bus via ``plugin_manager.subscribe(event_type,
+callback)`` and schedule updates on the App loop through
+``app.call_from_thread``.
+
+**Stream pipeline.** ``aru.streaming.run_stream`` owns the single Agno
+event loop (tool events, content deltas, max-tokens recovery). The same
+loop drives two presentations:
+
+* ``RichLiveSink`` (``aru/sinks.py``) — wraps Rich ``Live`` +
+  ``StreamingDisplay``. Used by ``run_agent_capture`` (REPL).
+* ``TextualBusSink`` (``aru/tui/sinks.py``) — publishes into a
+  ``ChatPane`` via ``call_from_thread``. Used by
+  ``run_agent_capture_tui``.
+
+**UI adapter.** ``aru/ui.py`` defines the ``UIAdapter`` protocol
+(``ask_choice`` / ``confirm`` / ``ask_text`` / ``print`` / ``notify``).
+``ReplUI`` delegates to ``select_option`` + ``ask_yes_no`` + Rich console.
+``TuiUI`` (``aru/tui/ui.py``) dispatches to ``ChoiceModal`` /
+``ConfirmModal`` / ``TextInputModal`` via ``push_screen`` + callback +
+``threading.Event`` (so sync call sites in tool threads stay sync).
+``ctx.ui`` is installed in both bootstraps; call sites
+(``check_permission``, plan approval, ``/memory clear``, ``/undo``,
+``/yolo``) go through it.
+
+**Layout.** ``AruApp`` composes: ``AruHeader`` (top), horizontal pane
+with ``ChatPane`` (3fr) + ``ToolsPane`` (1fr), ``StatusPane`` (docked
+bottom), ``Input`` bar, ``Footer``.
+
+**Keybindings.**
+
+| Key        | Action                            |
+|------------|-----------------------------------|
+| Ctrl+Q     | quit (saves session)              |
+| Ctrl+L     | clear chat pane                   |
+| Ctrl+A     | cycle permission mode             |
+| Ctrl+P     | toggle plan mode                  |
+| Ctrl+F     | open SearchScreen (chat history)  |
+| Up / Down  | cycle prior submitted inputs      |
+
+**Local slash commands** (no agent round-trip): ``/help``, ``/clear``,
+``/quit`` / ``/exit``, ``/plan``. Anything else is forwarded to the
+agent as a user message.
 
 ## Plugin migration — cwd-aware tools (Tier 3 #2)
 

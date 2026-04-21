@@ -227,13 +227,21 @@ class PluginManager:
         """Subscribe to all events (wildcard)."""
         self._subscribers["*"].append(callback)
 
-    async def publish(self, event_type: str, data: dict[str, Any] | None = None) -> None:
+    async def publish(self, event_type: str, data: Any = None) -> None:
         """Publish an event to all subscribers + fire the ``event`` hook.
 
         Unlike ``fire()``, this is fan-out: subscribers receive a copy and
         cannot mutate the event for other subscribers.
+
+        ``data`` accepts a plain dict (legacy) or a ``pydantic.BaseModel``
+        (e.g. any subclass of ``aru.events.BaseEvent``). Models are coerced
+        to dict via ``model_dump()`` before fanning out so existing
+        subscribers that read dict keys keep working unchanged.
         """
-        payload = {"event_type": event_type, **(data or {})}
+        from aru.events import coerce_to_dict
+
+        data_dict = coerce_to_dict(data)
+        payload = {"event_type": event_type, **data_dict}
 
         # Notify typed subscribers
         for cb in self._subscribers.get(event_type, []):

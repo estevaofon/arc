@@ -50,6 +50,32 @@ aru
 
 That's it — `aru` is available globally after install.
 
+### TUI mode (optional)
+
+`aru --tui` launches a full-screen Textual interface: persistent chat
+pane, live tools sidebar, reactive status bar (session · model · tokens
+· cost · mode), branded header, and modal permission prompts.
+
+```bash
+aru --tui
+```
+
+Key bindings:
+
+| Key          | Action                   |
+|--------------|--------------------------|
+| Ctrl+Q       | Quit (saves session)     |
+| Ctrl+L       | Clear chat pane          |
+| Ctrl+A       | Cycle permission mode    |
+| Ctrl+P       | Toggle plan mode         |
+| Ctrl+F       | Search chat history      |
+| Up / Down    | Recall prior inputs      |
+
+Local slash commands inside the TUI: `/help`, `/clear`, `/quit`,
+`/plan`. Any other input is sent to the agent. The classic REPL (`aru`
+with no flags) is unchanged — both modes share the same sessions,
+plugins, permissions, and tools.
+
 ## Usage
 
 ### Commands

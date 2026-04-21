@@ -190,7 +190,11 @@ def _toggle_yolo_mode(ctx) -> None:
         border_style="red",
         padding=(1, 2),
     ))
-    if ask_yes_no("Confirm enabling YOLO mode"):
+    # E7: route through ctx.ui so TUI gets a ConfirmModal, REPL keeps ask_yes_no.
+    from aru.permissions import _resolve_ui
+    from aru.runtime import get_ctx
+    ui = _resolve_ui(get_ctx())
+    if ui.confirm("Confirm enabling YOLO mode", default=False):
         set_permission_mode("yolo")
         console.print("[bold red]🔥 YOLO MODE ACTIVE — all permissions bypassed.[/bold red]")
     else:
@@ -214,6 +218,12 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
     _configure_plugin_logger(verbose=bool(os.environ.get("ARU_VERBOSE")))
 
     ctx = init_ctx(console=console, skip_permissions=skip_permissions)
+
+    # E6a: install the REPL UIAdapter so migrated call sites
+    # (check_permission, plan approval, /memory clear, /undo, /yolo)
+    # route through ctx.ui. TUI mode installs TuiUI in run_tui instead.
+    from aru.ui import install_repl_ui_on_ctx
+    install_repl_ui_on_ctx(ctx)
 
     store = SessionStore()
 
@@ -517,15 +527,23 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
                     console.print(f"  [cyan]{rel}[/cyan]")
 
             console.print()
-            console.print("[bold]Restore options:[/bold]")
-            console.print("  [cyan](b)[/cyan] Restore code and conversation (both)")
-            console.print("  [cyan](c)[/cyan] Restore only code (keep conversation)")
-            console.print("  [cyan](v)[/cyan] Restore only conversation (keep code)")
-            console.print("  [cyan](n)[/cyan] Cancel")
-            try:
-                choice = console.input("[bold yellow]Choice (b/c/v/n):[/bold yellow] ").strip().lower()
-            except (EOFError, KeyboardInterrupt):
-                choice = "n"
+            # E7: route through ctx.ui so TUI gets a ChoiceModal and REPL
+            # keeps the same printed options + letter shortcut flow.
+            from aru.permissions import _resolve_ui as _ui
+            options = [
+                "Restore code and conversation (both)",
+                "Restore only code (keep conversation)",
+                "Restore only conversation (keep code)",
+                "Cancel",
+            ]
+            picked = _ui(ctx).ask_choice(
+                options,
+                title="Restore options:",
+                default=0,
+                cancel_value=3,
+            )
+            choice_map = {0: "b", 1: "c", 2: "v", 3: "n"}
+            choice = choice_map.get(picked if picked is not None else 3, "n")
 
             if choice in ("n", ""):
                 console.print("[dim]Cancelled.[/dim]")
@@ -974,6 +992,10 @@ async def run_oneshot(prompt: str, print_only: bool = False, skip_permissions: b
     _configure_plugin_logger(verbose=bool(os.environ.get("ARU_VERBOSE")))
     ctx = init_ctx(console=console, skip_permissions=skip_permissions)
 
+    # E6a: install REPL UI so migrated call sites work in one-shot mode.
+    from aru.ui import install_repl_ui_on_ctx
+    install_repl_ui_on_ctx(ctx)
+
     config = load_config()
     ctx.config = config
     # Populate invoke_skill's dynamic docstring (same as interactive path)
@@ -1038,6 +1060,7 @@ def main():
     args = sys.argv[1:]
     skip_permissions = "--dangerously-skip-permissions" in args
     print_only = "--print" in args or "-p" in args
+    tui_mode = "--tui" in args
 
     if "--list" in args:
         _list_sessions_and_exit()
@@ -1050,6 +1073,20 @@ def main():
             resume_id = args[idx + 1]
         else:
             resume_id = "last"
+
+    # TUI mode takes precedence over REPL but not over one-shot (positional).
+    # Checked AFTER --list / --resume so those flags still work in TUI.
+    if tui_mode:
+        from aru.tui import run_tui
+        try:
+            asyncio.run(run_tui(skip_permissions=skip_permissions, resume_id=resume_id))
+        except (KeyboardInterrupt, asyncio.CancelledError, SystemExit):
+            _graceful_exit()
+        except Exception as e:
+            from rich.markup import escape
+            console.print(f"\n[bold red]Fatal error: {escape(str(e))}[/bold red]")
+            _graceful_exit()
+        return
 
     # Collect positional arguments (non-flag, non-flag-value)
     flags_with_value = {"--resume"}

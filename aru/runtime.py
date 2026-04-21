@@ -212,6 +212,17 @@ class RuntimeContext:
     # -- Config (for skill lookup from tools like invoke_skill) --
     config: Any = None  # aru.config.AgentConfig
 
+    # -- TUI integration (E2) --
+    # When aru runs in TUI mode (``aru --tui``) the Textual App is stored
+    # here so sync code (e.g. permission prompts in thread pools) can
+    # detect "am I in TUI?" and route through ``ctx.ui`` instead of the
+    # legacy stdin prompts. ``None`` means REPL mode.
+    tui_app: Any = None
+    # UI adapter (E6a) — ``ReplUI`` / ``TuiUI`` implementation handling
+    # ``ask_choice`` / ``confirm`` / ``print`` / ``notify`` uniformly.
+    # Set by the bootstrap path; callers prefer this over direct console.
+    ui: Any = None
+
 
 # ── ContextVar plumbing ──────────────────────────────────────────────
 
