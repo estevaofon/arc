@@ -26,6 +26,7 @@ from aru.memory.loader import (
 from aru.memory.store import (
     MAX_MEMORIES_PER_PROJECT,
     MemoryEntry,
+    _encode_project_path,
     clear_memory,
     delete_memory,
     list_memories,
@@ -150,7 +151,7 @@ def test_memory_section_includes_body_when_index_exists(project_root, memory_bas
 
 
 def test_load_memory_index_truncates_above_cap(project_root, memory_base):
-    mem_dir = memory_dir_for_project(project_root, base=memory_base)
+    mem_dir = memory_dir_for_project(project_root, base=memory_base, create=True)
     # Seed a gigantic index file manually
     (mem_dir / "MEMORY.md").write_text(
         "# Memory Index\n\n" + "\n".join(f"- line {i}" for i in range(MAX_INDEX_LINES + 30)),
@@ -159,6 +160,42 @@ def test_load_memory_index_truncates_above_cap(project_root, memory_base):
     text = load_memory_index(project_root, base=memory_base)
     assert text.count("\n") <= MAX_INDEX_LINES
     assert "truncated" in text
+
+
+def test_memory_dir_is_lazy_by_default(project_root, memory_base):
+    """Default call must NOT create the dir — avoids phantom empty folders."""
+    mem_dir = memory_dir_for_project(project_root, base=memory_base)
+    assert not mem_dir.exists()
+
+
+def test_memory_dir_creates_when_requested(project_root, memory_base):
+    mem_dir = memory_dir_for_project(project_root, base=memory_base, create=True)
+    assert mem_dir.exists()
+
+
+def test_load_memory_index_does_not_create_dir(project_root, memory_base):
+    """Calling the loader on a clean project must leave the FS untouched."""
+    assert load_memory_index(project_root, base=memory_base) == ""
+    mem_dir = memory_dir_for_project(project_root, base=memory_base)
+    assert not mem_dir.exists()
+
+
+def test_encode_project_path_matches_cc_scheme():
+    # Windows-style path: drive colon, backslashes, AND underscores all
+    # become dashes (matches Claude Code's scheme exactly).
+    assert _encode_project_path(
+        "D:\\OneDrive\\Documentos\\python_projects\\aru"
+    ).endswith("D--OneDrive-Documentos-python-projects-aru")
+    # Case is preserved; runs of separators are NOT collapsed.
+    encoded = _encode_project_path("D:\\Foo_Bar\\baz")
+    assert encoded.endswith("D--Foo-Bar-baz")
+
+
+def test_delete_memory_missing_dir_returns_false(project_root, memory_base):
+    """Deleting from a project that never wrote any memory is a no-op."""
+    assert delete_memory(project_root, "user_whatever", base=memory_base) is False
+    mem_dir = memory_dir_for_project(project_root, base=memory_base)
+    assert not mem_dir.exists()
 
 
 # ── Extractor ────────────────────────────────────────────────────────
@@ -213,3 +250,47 @@ def test_candidate_to_entry_builds_valid_entry():
     assert entry is not None
     assert entry.type == "user"
     assert entry.name == "Prefer typing"
+
+
+# ── Agent-facing memory_write tool ────────────────────────────────────
+
+def test_memory_write_tool_persists_and_is_queryable(project_root, memory_base, monkeypatch):
+    """memory_write is the agent's direct way to save a fact; memory_search must find it."""
+    import aru.tools.memory_tool as mt
+    # Pin the tool's internal resolver to our tmp project_root + base so the
+    # write lands in the test-scoped directory rather than ~/.aru.
+    monkeypatch.setattr(mt, "_project_root", lambda: project_root)
+    from aru.memory import store as _store
+    original_dir = _store.memory_dir_for_project
+
+    def _scoped_dir(pr, base=None, *, create=False):
+        return original_dir(pr, base=memory_base, create=create)
+
+    monkeypatch.setattr(_store, "memory_dir_for_project", _scoped_dir)
+
+    result = mt.memory_write(
+        name="Prefer pytest",
+        body="The project uses pytest exclusively; pick pytest idioms.",
+        type="user",
+        description="pytest, never unittest",
+    )
+    assert "Saved memory" in result
+    assert "user_prefer_pytest" in result
+
+    hits = mt.memory_search(query="pytest")
+    assert "Prefer pytest" in hits
+    assert "pytest idioms" in hits
+
+
+def test_memory_write_tool_rejects_invalid_type(project_root, monkeypatch):
+    import aru.tools.memory_tool as mt
+    monkeypatch.setattr(mt, "_project_root", lambda: project_root)
+    out = mt.memory_write(name="X", body="b", type="bogus")
+    assert "Invalid memory type" in out
+
+
+def test_memory_write_tool_requires_name_and_body(project_root, monkeypatch):
+    import aru.tools.memory_tool as mt
+    monkeypatch.setattr(mt, "_project_root", lambda: project_root)
+    assert "requires both" in mt.memory_write(name="", body="b")
+    assert "requires both" in mt.memory_write(name="X", body="")

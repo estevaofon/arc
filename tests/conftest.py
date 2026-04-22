@@ -41,6 +41,32 @@ def isolated_plugin_cache(tmp_path_factory, monkeypatch):
     yield iso_root
 
 
+@pytest.fixture(autouse=True)
+def isolated_memory_store(tmp_path_factory, monkeypatch):
+    """Shield tests from real auto-memories in ~/.aru/projects/<path>/memory/.
+
+    Without this, a user who has previously written memories via the
+    auto-extractor or /memory commands would see their real memory body
+    leak into any test that builds an AgentConfig and calls
+    ``get_extra_instructions`` (the memory index is injected into the
+    system prompt there).
+    """
+    from aru.memory import loader as _loader
+    from aru.memory import store as _store
+
+    iso_base = str(tmp_path_factory.mktemp("memory_iso"))
+    original = _store.memory_dir_for_project
+
+    def _scoped(project_root, base=None, *, create=False):
+        return original(project_root, base=base or iso_base, create=create)
+
+    monkeypatch.setattr(_store, "memory_dir_for_project", _scoped)
+    # loader.py imports memory_dir_for_project directly — patch the bound
+    # reference too so load_memory_index sees the tmp base.
+    monkeypatch.setattr(_loader, "memory_dir_for_project", _scoped)
+    yield iso_base
+
+
 @pytest.fixture
 def temp_dir() -> Iterator[Path]:
     """Create a temporary directory for testing.

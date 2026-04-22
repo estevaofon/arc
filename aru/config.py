@@ -227,7 +227,20 @@ class AgentConfig:
             try:
                 from aru.memory.loader import memory_section_for_prompt
                 import os
-                section = memory_section_for_prompt(os.getcwd())
+                # Prefer session.project_root (stable across subdir/worktree
+                # invocations) so memory is keyed to the project, not to
+                # whichever cwd `aru` happened to be launched from. Fall
+                # back to os.getcwd() during bootstrap or outside a ctx.
+                project_root = os.getcwd()
+                try:
+                    from aru.runtime import get_ctx
+                    _session = getattr(get_ctx(), "session", None)
+                    _pr = getattr(_session, "project_root", None) if _session else None
+                    if _pr:
+                        project_root = _pr
+                except LookupError:
+                    pass
+                section = memory_section_for_prompt(project_root)
                 if section:
                     parts.append(section.strip())
             except Exception:  # pragma: no cover — memory module failure mustn't break prompts

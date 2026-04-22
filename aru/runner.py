@@ -670,6 +670,26 @@ async def run_agent_capture(agent, message: str, session=None, lightweight: bool
         except Exception:
             pass
         console.print("\n[yellow]Interrupted.[/yellow]")
+        # Python 3.11+: ``asyncio.run`` cancels the main task on SIGINT.
+        # Catching CancelledError here is not enough — the task stays in a
+        # "cancelling" state, so the caller's NEXT await (typically the
+        # REPL prompt in cli.py) re-raises CancelledError immediately,
+        # which looks to the user like "Ctrl+C exits aru". ``uncancel()``
+        # resets that counter so the turn ends cleanly and the REPL keeps
+        # running.
+        try:
+            current = asyncio.current_task()
+            if current is not None:
+                current.uncancel()
+        except Exception:
+            pass
+        # Mirror the TUI's reset at turn start — clear the shared abort
+        # flag so the next turn isn't short-circuited by leftover state.
+        try:
+            from aru.runtime import reset_abort
+            reset_abort()
+        except Exception:
+            pass
     except Exception as e:
         try:
             sink.exit()

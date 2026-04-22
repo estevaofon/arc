@@ -104,7 +104,7 @@ aru/
     ├── worktree.py     # Git worktree primitives (list/create/remove + worktree_info tool)
     ├── apply_patch.py  # Atomic multi-file patch with rollback (Add/Update/Delete/Move)
     ├── lsp.py          # 4 semantic tools: lsp_definition/references/hover/diagnostics
-    ├── memory_tool.py  # memory_search tool (query/slug/summary modes over auto-memory)
+    ├── memory_tool.py  # memory_search (read) + memory_write (direct-save) tools over auto-memory
     └── gitignore.py    # .gitignore-aware file filtering with caching
 ```
 
@@ -197,6 +197,7 @@ Tool categories in the file:
 | Agent | `delegate_task` (spawns sub-agents via `AgentSpec`) |
 | Task mgmt | `create_task_list`, `update_task`, `update_plan_step`, `enter_plan_mode`, `exit_plan_mode` |
 | Skill | `invoke_skill` (load another skill's SKILL.md into next-turn context — used for multi-skill workflow transitions) |
+| Memory | `memory_search` (read/query auto-memory), `memory_write` (explicit save when user asks to remember something) |
 
 ### `tools/skill.py` — Skill Invocation Tool
 

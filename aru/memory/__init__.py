@@ -10,10 +10,18 @@ Components:
 
 Storage layout:
 
-    ~/.aru/projects/<sha256(project_root)[:12]>/memory/
+    ~/.aru/projects/<path-encoded>/memory/
       ├── MEMORY.md              # one-line-per-memory index
       ├── feedback_*.md          # one file per memory, YAML frontmatter + body
       └── user_*.md
+
+``<path-encoded>`` mirrors Claude Code's scheme: every non-alphanumeric
+character in ``abspath(project_root)`` becomes a dash. Example::
+
+    D:\\OneDrive\\python_projects\\aru -> D--OneDrive-python-projects-aru
+
+The directory is created lazily on the first ``write_memory`` call, so a
+project that never writes a memory never leaves an empty folder behind.
 
 Config (aru.json):
 

@@ -35,7 +35,7 @@ from aru.tools.lsp import (
     lsp_references,
     lsp_rename,
 )
-from aru.tools.memory_tool import memory_search
+from aru.tools.memory_tool import memory_search, memory_write
 from aru.tools.web import web_fetch, web_search
 from aru.tools.worktree import worktree_info
 
@@ -82,7 +82,7 @@ _TASK_MGMT_TOOLS = [
 # clarity; excluded from subagent / planner / explorer sets.
 _SKILL_TOOLS = [invoke_skill]
 
-CORE_TOOLS = _READ_ONLY_TOOLS + _WRITE_TOOLS + [bash] + _NET_TOOLS + [delegate_task]
+CORE_TOOLS = _READ_ONLY_TOOLS + _WRITE_TOOLS + [bash] + _NET_TOOLS + [delegate_task, memory_write]
 
 ALL_TOOLS = _TASK_MGMT_TOOLS + _SKILL_TOOLS + CORE_TOOLS
 

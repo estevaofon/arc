@@ -11,7 +11,6 @@ etc. until free.
 
 from __future__ import annotations
 
-import hashlib
 import os
 import re
 from dataclasses import dataclass
@@ -44,18 +43,48 @@ class MemoryEntry:
 
 # ── Paths ────────────────────────────────────────────────────────────
 
-def _project_hash(project_root: str) -> str:
-    return hashlib.sha256(os.path.abspath(project_root).encode("utf-8")).hexdigest()[:12]
+_PATH_ENCODE_RE = re.compile(r"[^A-Za-z0-9]")
 
 
-def memory_dir_for_project(project_root: str, base: str | None = None) -> Path:
-    """Return (and create, if needed) the memory directory for *project_root*.
+def _encode_project_path(project_root: str) -> str:
+    """Encode an absolute project path as a human-readable folder name.
 
-    Defaults to ``~/.aru/projects/<hash>/memory``. Override ``base`` (test-only).
+    Matches Claude Code's scheme: every non-alphanumeric character (drive
+    colon, path separator, underscore, dot, dash, space, ...) becomes a
+    single dash, without collapsing runs. So ``D:\\`` → ``D--`` (colon
+    AND backslash each become a dash).
+
+    A quick ``ls ~/.aru/projects`` then shows which folder belongs to
+    which project without needing to decode a hash.
+
+    Examples::
+
+        D:\\OneDrive\\python_projects\\aru   -> D--OneDrive-python-projects-aru
+        /home/u/proj                        -> -home-u-proj
+    """
+    return _PATH_ENCODE_RE.sub("-", os.path.abspath(project_root))
+
+
+def memory_dir_for_project(
+    project_root: str,
+    base: str | None = None,
+    *,
+    create: bool = False,
+) -> Path:
+    """Return the memory directory path for *project_root*.
+
+    ``~/.aru/projects/<path-encoded>/memory`` by default. Override ``base``
+    for tests.
+
+    The directory is **not** created on disk unless ``create=True``. Read
+    paths (``load_memory_index``, ``list_memories``) pass the default so
+    a project that never writes a memory leaves no empty folder behind.
+    ``write_memory`` passes ``create=True``.
     """
     base_path = Path(base) if base else Path.home() / ".aru" / "projects"
-    d = base_path / _project_hash(project_root) / "memory"
-    d.mkdir(parents=True, exist_ok=True)
+    d = base_path / _encode_project_path(project_root) / "memory"
+    if create:
+        d.mkdir(parents=True, exist_ok=True)
     return d
 
 
@@ -153,7 +182,7 @@ def write_memory(project_root: str, entry: MemoryEntry,
             f"Invalid memory type {entry.type!r}; must be one of "
             f"{sorted(VALID_MEMORY_TYPES)}."
         )
-    mem_dir = memory_dir_for_project(project_root, base=base)
+    mem_dir = memory_dir_for_project(project_root, base=base, create=True)
     slug = _unique_slug(mem_dir, _slugify(entry.name, entry.type))
     entry.slug = slug
     (mem_dir / entry.filename).write_text(_render_memory_file(entry), encoding="utf-8")
@@ -239,6 +268,8 @@ def search_memories(
 def delete_memory(project_root: str, slug: str, base: str | None = None) -> bool:
     """Delete the memory file + remove its index line. True if something was removed."""
     mem_dir = memory_dir_for_project(project_root, base=base)
+    if not mem_dir.exists():
+        return False
     path = mem_dir / f"{slug}.md"
     removed = path.exists()
     if removed:
