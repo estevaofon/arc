@@ -8,6 +8,75 @@ pytest.importorskip("textual")
 
 
 @pytest.mark.asyncio
+async def test_user_message_persists_to_session_history():
+    """Plain-text messages must land in ``session.history`` as user turns.
+
+    Regression guard: before fix/tui-freezing2, ``_dispatch_user_turn``
+    did not call ``session.add_message("user", ...)`` (the REPL did, but
+    the TUI forwarded straight to ``run_agent_capture_tui``). Session
+    files wrote back only ``assistant`` + ``tool`` turns, so a reloaded
+    session had no user context and follow-up prompts like ``continue``
+    left the agent thinking for a tick and halting — no user side to
+    reason against.
+    """
+    from aru.tui.app import AruApp
+    from aru.session import Session
+
+    app = AruApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.session = Session(session_id="test-persist")
+        assert app.session.history == []
+
+        app._dispatch_user_turn("hello world")
+        # Persistence happens synchronously, before the worker dispatch,
+        # so we can check immediately — no need to await the worker
+        # (which would fail on an uninstalled runtime anyway).
+
+        user_msgs = [m for m in app.session.history if m.get("role") == "user"]
+        assert len(user_msgs) == 1
+        blocks = user_msgs[0]["content"]
+        text = "".join(
+            b.get("text", "")
+            for b in blocks
+            if isinstance(b, dict) and b.get("type") == "text"
+        )
+        assert text == "hello world"
+
+
+@pytest.mark.asyncio
+async def test_multiple_user_turns_accumulate_in_history():
+    """Successive ``_dispatch_user_turn`` calls all append — no overwrite."""
+    from aru.tui.app import AruApp
+    from aru.session import Session
+
+    app = AruApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.session = Session(session_id="test-persist-multi")
+
+        # Simulate three user turns in quick succession. The agent worker
+        # is exclusive/grouped, so these enqueue rather than actually
+        # running — which is exactly what we need to isolate the
+        # persistence path.
+        for msg in ("first", "second", "continue"):
+            app._dispatch_user_turn(msg)
+
+        user_msgs = [m for m in app.session.history if m.get("role") == "user"]
+        assert len(user_msgs) == 3
+        plain_texts = []
+        for m in user_msgs:
+            plain_texts.append(
+                "".join(
+                    b.get("text", "")
+                    for b in m["content"]
+                    if isinstance(b, dict) and b.get("type") == "text"
+                )
+            )
+        assert plain_texts == ["first", "second", "continue"]
+
+
+@pytest.mark.asyncio
 async def test_slash_help_handled_locally():
     """`/help` prints help inline — does NOT dispatch to the agent."""
     from aru.tui.app import AruApp

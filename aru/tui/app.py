@@ -933,6 +933,19 @@ class AruApp(App):
         """Run the agent in a worker and stream into the chat pane."""
         chat = self.query_one(ChatPane)
         chat.add_user_message(text)
+        # Persist the raw user message to session.history — parallel to
+        # the REPL's ``session.add_message("user", user_input)`` call in
+        # ``cli.py``. Without this, TUI sessions reload with an empty
+        # user side (``session.history`` contains only assistant + tool
+        # turns) and follow-up turns like "continue" see no user context
+        # from prior turns, so the agent replies with text and halts.
+        # We save the *raw* text, before ``@file`` expansion, so the
+        # rehydrated history matches what the user actually typed.
+        if self.session is not None and text:
+            try:
+                self.session.add_message("user", text)
+            except Exception:
+                pass
         # Reflect the new prompt in the terminal tab so users with many
         # tabs open can tell which one is working on what.
         if not self.is_headless:
