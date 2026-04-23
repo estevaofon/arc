@@ -43,6 +43,7 @@ aru/
 │       ├── completer.py # SlashCompleter — dropdown for /cmds and @file
 │       ├── context_pane.py # ContextPane — top sidebar, context-window breakdown
 │       ├── header.py   # AruHeader — branded top bar
+│       ├── inline_choice.py # InlineChoicePrompt — approval prompt mounted inline in ChatPane (keeps diff/plan visible above)
 │       ├── loaded_pane.py  # LoadedPane — bottom sidebar, boot breadcrumbs
 │       ├── status.py   # StatusPane — session/model/tokens/cost/mode bottom bar
 │       ├── thinking.py # ThinkingIndicator — rotating phrase + spinner while busy
