@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import time
 from typing import Any
 
 from textual.app import App, ComposeResult
@@ -256,12 +257,24 @@ class AruApp(App):
         "skills", "agents", "commands", "mcp", "yolo",
     }
 
-    # Layer 10 — interval (seconds) between belt-and-suspenders re-emits of
-    # the mouse-tracking enable sequences. 8s is the worst-case time-to-recover
-    # if a leaked DEC private-mode escape disables the wheel mid-turn; the
-    # cost is ~24 bytes per tick (four idempotent SGR sequences). See
-    # ``on_mount`` and ``_reenable_mouse_tracking`` for context.
-    _MOUSE_REENABLE_INTERVAL: float = 8.0
+    # Layer 10 / 12 — interval (seconds) between belt-and-suspenders re-emits
+    # of the mouse-tracking enable sequences. Was 8s pre-Layer-12; user
+    # report on 2026-04-25 against ``final-fantasy-9/.aru/sessions/b33dfb99``
+    # was that the wheel never came back even after the turn ended in YOLO,
+    # and 8s was visibly long enough that the user gave up before the next
+    # tick. 3s is short enough that a corrupted state self-heals before the
+    # next mouse interaction, and the cost is still ~64 bytes per tick (the
+    # Layer 12 off-then-on shake — see ``_reenable_mouse_tracking``).
+    _MOUSE_REENABLE_INTERVAL: float = 3.0
+
+    # Layer 12 — minimum interval (seconds) between keypress-triggered
+    # mouse-tracking re-arms. Each keystroke is an opportunity to recover
+    # — if the user is typing it might be precisely BECAUSE the wheel just
+    # stopped working — but we don't want a fast typist to turn every
+    # keystroke into four extra terminal writes. 500 ms is below human
+    # noticeable retry latency yet caps the keystroke→write amplification
+    # at ~2 Hz worst case.
+    _KEYPRESS_REARM_DEBOUNCE: float = 0.5
 
     def __init__(
         self,
@@ -288,6 +301,12 @@ class AruApp(App):
         # cleared) by on_input_submitted.
         self._pending_paste: str | None = None
         self._pending_paste_lines: int = 0
+        # Layer 12 — last time we re-emitted the mouse-tracking enable
+        # sequences via the keypress path. Used to debounce per-keystroke
+        # re-arming so a fast typist doesn't spam the terminal with re-
+        # enables. Initialised to negative infinity so the first keystroke
+        # always rearms.
+        self._last_mouse_reenable_at: float = float("-inf")
 
     # ── Composition ──────────────────────────────────────────────────
 
@@ -549,7 +568,14 @@ class AruApp(App):
         suggestion and fires ``Input.Submitted``, which produced the
         "three Enters to run /help" glitch. Tab is the only key that
         accepts the highlighted suggestion.
+
+        Layer 12 — every keystroke is also a recovery opportunity. The
+        Layer 10 periodic tick still runs every ``_MOUSE_REENABLE_INTERVAL``
+        but a typing user wants the wheel back NOW, not in three seconds.
+        Debounced via ``_KEYPRESS_REARM_DEBOUNCE`` so a fast typist
+        doesn't amplify each keystroke into four extra terminal writes.
         """
+        self._maybe_rearm_mouse_on_keypress()
         try:
             completer = self.query_one(SlashCompleter)
         except Exception:
@@ -1097,33 +1123,111 @@ class AruApp(App):
             # without waiting for the periodic Layer 10 tick.
             self._reenable_mouse_tracking()
 
-    def _reenable_mouse_tracking(self) -> None:
-        """Re-emit Textual's mouse-tracking enable sequences (idempotent).
+    # Layer 12 — DEC private-mode sequences for mouse tracking. Defined
+    # at class scope so both the off-then-on shake below and any future
+    # caller (Click handler, focus event) can reuse the exact same set
+    # without drift.
+    _MOUSE_DISABLE_SEQS: tuple[str, ...] = (
+        "\x1b[?1000l",
+        "\x1b[?1003l",
+        "\x1b[?1015l",
+        "\x1b[?1006l",
+    )
+    _MOUSE_ENABLE_SEQS: tuple[str, ...] = (
+        "\x1b[?1000h",
+        "\x1b[?1003h",
+        "\x1b[?1015h",
+        "\x1b[?1006h",
+    )
 
-        Calls the active driver's ``_enable_mouse_support`` which writes
-        four short SGR sequences (``?1000h`` / ``?1003h`` / ``?1015h`` /
-        ``?1006h``). They re-arm X10 mouse reporting at the terminal level
-        so a leaked ``\\x1b[?1000l`` (or any other DEC private-mode escape
-        that disabled wheel input) is recovered from automatically.
-        Idempotent — sending an enable when tracking is already on is a
-        documented no-op on every emulator.
-        Called from two sites:
+    def _reenable_mouse_tracking(self) -> None:
+        """Re-arm mouse tracking via an off-then-on shake (Layer 12).
+
+        Pre-Layer-12 this method delegated to the driver's
+        ``_enable_mouse_support`` which writes four short SGR sequences
+        (``?1000h`` / ``?1003h`` / ``?1015h`` / ``?1006h``). That worked
+        when the terminal forwarded the writes verbatim, but the user
+        report on 2026-04-25 against
+        ``final-fantasy-9/.aru/sessions/b33dfb99`` was the wheel never
+        coming back even though Layer 9 (turn-boundary call) and Layer 10
+        (8s tick) both ran. Two failure modes the old code couldn't
+        recover from:
+
+        1. **ConPTY enable cache.** Windows ConPTY tracks DEC private-mode
+           state on its side and may treat ``?1000h`` as a no-op when its
+           cache says "already enabled" — even when the underlying
+           terminal lost the state. Sending ``?1000l`` first forces the
+           cache through a state transition so the subsequent ``?1000h``
+           is propagated.
+        2. **Driver-side gate.** ``WindowsDriver._enable_mouse_support``
+           opens with ``if not self._mouse: return`` (textual 8.2.4,
+           windows_driver.py:55). If a future Textual flips the gate
+           during shutdown / pause / alt-screen toggle, our recovery
+           silently no-ops. Going through ``driver.write`` bypasses the
+           gate and writes the bytes regardless.
+
+        Implementation: emit all four ``...l`` (off) sequences, then all
+        four ``...h`` (on) sequences, then flush. Eight short writes
+        (~64 bytes) bufferised into one terminal emit by ``WriterThread``.
+        Idempotent on a healthy terminal — the off→on cycle leaves the
+        final state identical to a single ``?1000h``, just with a
+        microscopic gap during the transition (no observable wheel-event
+        loss in practice).
+
+        Called from three sites:
         * ``_run_turn`` finally-clause (Layer 9) — eager recovery at every
           turn boundary so the first post-turn scroll always works.
         * ``_self_heal_terminal_state`` periodic tick (Layer 10) — recovers
-          mid-turn corruption (e.g. a leaked escape in panel content)
-          within ``_MOUSE_REENABLE_INTERVAL`` instead of leaving the wheel
-          dead until the (potentially long) turn finishes.
+          mid-turn corruption within ``_MOUSE_REENABLE_INTERVAL``.
+        * ``on_key`` keypress trigger (Layer 12) — recovers the moment the
+          user touches the keyboard, since a keystroke is a strong signal
+          they noticed the wheel is dead.
+
         Wrapped in ``try/except`` because the driver may be ``None`` in
-        headless / test mode and the private method's exact name could
-        shift in a future Textual; better to no-op silently than crash.
+        headless / test mode; we'd rather no-op silently than crash.
         """
         try:
             driver = self._driver
-            if driver is not None:
-                driver._enable_mouse_support()
+            if driver is None:
+                return
+            for seq in self._MOUSE_DISABLE_SEQS:
+                try:
+                    driver.write(seq)
+                except Exception:
+                    pass
+            for seq in self._MOUSE_ENABLE_SEQS:
+                try:
+                    driver.write(seq)
+                except Exception:
+                    pass
+            try:
+                driver.flush()
+            except Exception:
+                pass
         except Exception:
             pass
+
+    def _maybe_rearm_mouse_on_keypress(self) -> None:
+        """Layer 12 — re-arm mouse tracking on each keystroke (debounced).
+
+        Trigger fires from ``on_key`` so any user keypress is treated as a
+        recovery opportunity. A typing user is the strongest signal we
+        have that the wheel just stopped working — they reached for the
+        keyboard because the mouse stopped responding, or they're about
+        to scroll back with PgUp and want it ready. Either way, paying
+        ~64 bytes per keypress (capped at 2 Hz by ``_KEYPRESS_REARM_DEBOUNCE``)
+        is a trivial cost for sub-second recovery latency.
+
+        The debounce intentionally uses ``time.monotonic`` rather than the
+        Textual scheduler so it survives across the async ``on_key``
+        boundary without an extra task. ``-inf`` initial value guarantees
+        the first keystroke always rearms.
+        """
+        now = time.monotonic()
+        if now - self._last_mouse_reenable_at < self._KEYPRESS_REARM_DEBOUNCE:
+            return
+        self._last_mouse_reenable_at = now
+        self._reenable_mouse_tracking()
 
     def _self_heal_terminal_state(self) -> None:
         """Periodic recovery of mouse tracking and input focus (Layers 10 + 11).

@@ -345,6 +345,84 @@ virtualisation experiments) would close some of these by structure,
 but at the cost of every other property the chat currently has
 (selection, copy, mid-stream insertion of arbitrary Rich panels, plan
 mounts). Layered defences are cheap and additive; the rewrite is not.
+
+----
+
+Post-mortem — "self-heal didn't recover the wheel" (2026-04-25,
+``fix/scroll-analysis2``)
+---------------------------------------------------------------------
+**Symptom:** wheel-dead reproduced again post-Layer-11, this time
+against ``final-fantasy-9/.aru/sessions/b33dfb99``. After a YOLO turn
+finished, mouse wheel stopped working on every scrollable surface
+simultaneously — the canonical Layer 7/9/10 fingerprint. User report:
+*"não vi nenhum self healing seu funcionar até agora"* — Layers 9
+(turn-boundary call) and 10 (8 s periodic tick) ran, the four
+``?1000h``/``?1003h``/``?1015h``/``?1006h`` enables were emitted, and
+yet the wheel never came back.
+
+A byte scan of the persisted session turned up zero ``\\x1b`` bytes —
+same shape as the Layer 9 incident. The leak is from a non-persisted
+path (transient tool output, panel content, ConPTY-side state drift)
+and we accept we won't trace its emitter. The real question Layer 12
+answers is: **why didn't the recovery sequences work even when they
+fired?**
+
+**Two root causes the previous re-enable couldn't address:**
+
+1. **ConPTY enable-cache.** Windows ConPTY tracks DEC private-mode
+   state on its side. When its cache says ``?1000`` is already ``h``
+   it can suppress the write to the underlying terminal — even when
+   the terminal itself lost the state. Sending ``?1000h`` while the
+   cache thinks it's already on is therefore a no-op against a real
+   leak. Our Layer-9/10 emit was exactly this no-op.
+
+2. **Driver-side enable gate.** ``WindowsDriver._enable_mouse_support``
+   in textual 8.2.4 (``windows_driver.py:55``) opens with
+   ``if not self._mouse: return``. ``_mouse`` is True by default and
+   shouldn't flip in normal use, but our recovery path was a single
+   ``driver._enable_mouse_support()`` call — if any future Textual
+   refactor decides to flip the gate during pause / alt-screen toggle
+   / shutdown, every layer 9 + 10 call silently no-ops and we'd never
+   see the failure.
+
+**Layer 12 — three coordinated changes** (in ``aru/tui/app.py``):
+
+a. **Off-then-on shake instead of enable-only.**
+   ``_reenable_mouse_tracking`` now emits the four ``?...l`` (off)
+   sequences first, then the four ``?...h`` (on) sequences, then
+   flushes. The forced state transition defeats ConPTY's enable-cache —
+   the cache sees ``l→h`` and propagates the write regardless of what
+   it thinks the prior state was. Eight short writes (~64 bytes)
+   bufferised into one terminal emit by Textual's ``WriterThread``.
+   Idempotent: a healthy terminal lands in the same final state as
+   the old enable-only path, with a microscopic transition gap that
+   doesn't drop wheel events in practice.
+
+b. **Bypass the driver's enable gate.** Recovery now calls
+   ``driver.write(...)`` for each sequence directly instead of
+   ``driver._enable_mouse_support()``. The four ``...l`` and four
+   ``...h`` strings are kept as class-level tuples
+   (``_MOUSE_DISABLE_SEQS`` / ``_MOUSE_ENABLE_SEQS``) so any future
+   call site (Click handler, focus event) reuses the exact same set
+   without drift, and the path is robust against Textual API changes.
+
+c. **Keypress trigger + tighter periodic tick.**
+   ``_MOUSE_REENABLE_INTERVAL`` drops from 8 s to 3 s so worst-case
+   self-heal latency is sub-poll-cycle. ``on_key`` calls
+   ``_maybe_rearm_mouse_on_keypress`` which fires
+   ``_reenable_mouse_tracking`` on every keystroke debounced to 2 Hz
+   (``_KEYPRESS_REARM_DEBOUNCE = 0.5 s``). A typing user is the
+   strongest signal we have that they noticed the wheel just stopped
+   responding — recovery now happens on the very next keystroke, not
+   on the next tick.
+
+Layer 12 differs from Layer 10 in the failure-mode it covers, not in
+its shape. Layer 10 said "the bug will keep finding new emitters; let's
+recover on a clock". Layer 12 says "even when we recover on the clock,
+the recovery sequence itself can be ineffective; let's make the
+recovery actually do something". The two stack: tick still runs,
+keypress trigger gives it sub-second latency, off-on shake makes the
+sequence the tick emits actually take effect.
 """
 
 from __future__ import annotations
