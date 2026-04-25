@@ -245,6 +245,11 @@ class AruApp(App):
         Binding("ctrl+b", "toggle_sidebar", "Sidebar", show=True),
         Binding("ctrl+y", "copy_last", "Copy last", show=True),
         Binding("ctrl+shift+y", "copy_all", "Copy all", show=False),
+        # Layer 13 — user-invoked terminal recovery. priority=True so the
+        # binding fires before any focused widget can absorb the key, in
+        # case Textual ever reclassifies ctrl+r as printable on some
+        # platform. See ``action_recover_terminal`` for what it does.
+        Binding("ctrl+r", "recover_terminal", "Recover", show=True, priority=True),
         Binding("up", "history_prev", "Prev", show=False, priority=False),
         Binding("down", "history_next", "Next", show=False, priority=False),
     ]
@@ -1140,6 +1145,33 @@ class AruApp(App):
         "\x1b[?1006h",
     )
 
+    # Layer 13 — full set of DEC private modes that ``WindowsDriver
+    # .start_application_mode`` enables at boot, minus alt-screen
+    # (``?1049``, not idempotent — would save/restore the display
+    # buffer) and kitty-keyboard (``>1u``, terminal-specific, doesn't
+    # affect wheel). Used by ``action_recover_terminal`` (Ctrl+R) which
+    # does a stronger shake than ``_reenable_mouse_tracking``: the user
+    # report on 2026-04-25 was that the mouse-only shake doesn't recover
+    # after Windows display sleep/wake — likely because more than just
+    # mouse tracking dropped. Re-emitting the full mode set raises the
+    # odds of catching whatever the wake corrupted.
+    _FULL_MODE_DISABLE_SEQS: tuple[str, ...] = (
+        "\x1b[?1000l",  # mouse VT200
+        "\x1b[?1003l",  # any-event mouse
+        "\x1b[?1015l",  # VT200 highlight mouse
+        "\x1b[?1006l",  # SGR ext mode mouse
+        "\x1b[?1004l",  # focus events
+        "\x1b[?2004l",  # bracketed paste
+    )
+    _FULL_MODE_ENABLE_SEQS: tuple[str, ...] = (
+        "\x1b[?1000h",
+        "\x1b[?1003h",
+        "\x1b[?1015h",
+        "\x1b[?1006h",
+        "\x1b[?1004h",
+        "\x1b[?2004h",
+    )
+
     def _reenable_mouse_tracking(self) -> None:
         """Re-arm mouse tracking via an off-then-on shake (Layer 12).
 
@@ -1446,6 +1478,96 @@ class AruApp(App):
     def action_focus_input(self) -> None:
         try:
             self.query_one(Input).focus()
+        except Exception:
+            pass
+
+    def action_recover_terminal(self) -> None:
+        """Layer 13 — user-invoked terminal-state recovery (Ctrl+R).
+
+        Layers 9 (turn boundary), 10 (3s tick), and 12 (per-keystroke,
+        currently broken because ``Input._on_key`` absorbs printable
+        keys) all delegate to ``_reenable_mouse_tracking`` which only
+        re-emits the four mouse DEC private modes. The user report on
+        2026-04-25 against ``fix/scroll-analysis3`` is that none of
+        those paths recover the wheel after a Windows display sleep /
+        wake — sending mouse-only escapes is not enough.
+
+        This action takes a stronger shape, in four steps:
+
+        1. **Re-assert ``ENABLE_VIRTUAL_TERMINAL_INPUT`` on stdin
+           (Windows only).** If the flag was cleared on the input pipe,
+           ConPTY stops translating mouse / focus events into VT
+           sequences and *no* escape we write to stdout fixes that.
+           Aditive (``current | flag``) so other input flags survive.
+
+        2. **Off-then-on shake of the FULL DEC mode set** from
+           ``WindowsDriver.start_application_mode`` (mouse +
+           focus-events + bracketed-paste). Excludes alt-screen
+           (``?1049``, not idempotent) and kitty-keyboard (``>1u``,
+           terminal-specific). 12 escapes total, ~108 bytes, one flush.
+
+        3. **``self.refresh()``** to force the compositor to redraw —
+           catches the case where Textual's view of the screen drifted
+           from the terminal's actual state.
+
+        4. **Visible chat message** so the user sees that the recovery
+           did execute. The user explicitly noted "não vi nenhum self
+           healing seu funcionar até agora" — silent recovery is
+           indistinguishable from no recovery, so we surface it.
+
+        Bound to ``Ctrl+R`` with ``priority=True`` so the binding fires
+        regardless of focused widget. Bindings dispatch via Textual's
+        binding system, not through ``_on_key``, so this path is immune
+        to the ``Input._on_key → event.stop()`` problem that breaks
+        Layer 12's keypress trigger.
+
+        What this does NOT fix: the underlying emitter that disables
+        terminal mouse tracking. It also requires a manual keystroke —
+        if Layer 13 proves the strong shake works, the next step is to
+        wire the same recovery into automatic triggers (resize / focus
+        regain / detect wake-from-sleep gap). Treat this as Layer 13:
+        a guaranteed-fire user-invoked recovery.
+        """
+        if sys.platform == "win32":
+            try:
+                from textual.drivers.win32 import (
+                    ENABLE_VIRTUAL_TERMINAL_INPUT,
+                    get_console_mode,
+                    set_console_mode,
+                )
+                current = get_console_mode(sys.__stdin__)
+                set_console_mode(
+                    sys.__stdin__, current | ENABLE_VIRTUAL_TERMINAL_INPUT
+                )
+            except Exception:
+                pass
+
+        driver = self._driver
+        if driver is not None:
+            for seq in self._FULL_MODE_DISABLE_SEQS:
+                try:
+                    driver.write(seq)
+                except Exception:
+                    pass
+            for seq in self._FULL_MODE_ENABLE_SEQS:
+                try:
+                    driver.write(seq)
+                except Exception:
+                    pass
+            try:
+                driver.flush()
+            except Exception:
+                pass
+
+        try:
+            self.refresh()
+        except Exception:
+            pass
+
+        try:
+            self.query_one(ChatPane).add_system_message(
+                "[Ctrl+R] Terminal modes re-armed (mouse / focus / paste)"
+            )
         except Exception:
             pass
 

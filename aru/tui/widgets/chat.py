@@ -423,6 +423,118 @@ the recovery sequence itself can be ineffective; let's make the
 recovery actually do something". The two stack: tick still runs,
 keypress trigger gives it sub-second latency, off-on shake makes the
 sequence the tick emits actually take effect.
+
+----
+
+Post-mortem — "no self-heal of Layers 9/10/12 actually recovers"
+(2026-04-25, ``fix/scroll-analysis3``)
+---------------------------------------------------------------------
+**Symptom:** user reported on a Windows display-sleep/wake scenario
+that the wheel dies and *no* existing self-heal recovers it. They
+explicitly observed: "não vi nenhum self healing seu funcionar até
+agora", and confirmed that even sending a message (which fires the
+Layer 9 turn-boundary call) does not bring the wheel back.
+
+**Two distinct root causes (one structural, one effectiveness):**
+
+1. **Layer 12's keypress trigger is dead during normal typing.**
+   ``Input._on_key`` in textual 8.x calls ``event.stop()`` for any
+   ``event.is_printable`` key (``textual/widgets/_input.py:736-737``).
+   The event is consumed at the widget level and never bubbles to
+   ``App.on_key``, so ``_maybe_rearm_mouse_on_keypress`` is never
+   invoked while the user types. The Layer 12 tests
+   (``tests/test_tui_layer12_recovery.py:109-116``) call the method
+   directly and never exercise the real path, so the bug shipped
+   silently. Only non-printable keys (Ctrl+combinations, arrows, Esc)
+   reach ``App.on_key``, and those also bypass it via the BINDINGS
+   system — which dispatches actions directly, again skipping
+   ``on_key``. In short: **Layer 12 keypress recovery never fires in
+   any production scenario**.
+
+2. **The off-then-on shake of mouse-only is not sufficient for the
+   user's failure mode.** Layer 9 (turn boundary) and Layer 10 (3s
+   tick) both fire ``_reenable_mouse_tracking``, which re-emits four
+   mouse DEC private modes. But ``WindowsDriver.start_application_mode``
+   enables a wider set at boot: mouse + focus-events (``?1004h``) +
+   bracketed paste (``?2004h``) + kitty-keyboard. If the display
+   sleep/wake corrupts more than just mouse — e.g. the entire VT
+   private-mode block on Windows Terminal's side — re-emitting only
+   mouse leaves the rest dead and the wheel doesn't come back. There
+   is also a possibility that ``ENABLE_VIRTUAL_TERMINAL_INPUT`` on
+   stdin gets cleared on wake, in which case **no** stdout escape we
+   write can recover wheel input regardless of what we send, because
+   ConPTY stops translating mouse events into VT on the input side.
+
+**Layer 13 — user-invoked guaranteed-fire recovery (Ctrl+R).**
+``AruApp.action_recover_terminal`` (``app.py``) does four things in
+order:
+
+a. **Re-asserts ``ENABLE_VIRTUAL_TERMINAL_INPUT`` on stdin (Windows
+   only)** via ``set_console_mode(stdin, current | flag)``. Aditive so
+   other input flags survive. Closes the input-side hypothesis from
+   root cause 2.
+
+b. **Off-then-on shakes the FULL DEC private mode set** —
+   ``_FULL_MODE_DISABLE_SEQS`` / ``_FULL_MODE_ENABLE_SEQS`` cover
+   mouse + focus-events + bracketed-paste. Excludes alt-screen
+   (``?1049``, not idempotent — would save/restore the display) and
+   kitty-keyboard (terminal-specific, doesn't affect wheel). 12
+   escapes total, ~108 bytes, one flush. Broader than Layer 12's
+   four-mode shake, so it catches whatever the wake corrupted even
+   if we don't know exactly what dropped.
+
+c. **``self.refresh()``** to force a compositor redraw. Covers the
+   case where Textual's view of the screen drifted from terminal
+   reality.
+
+d. **Visible system message** in the chat
+   (``[Ctrl+R] Terminal modes re-armed...``). The user explicitly
+   said silent recovery is indistinguishable from no recovery, so
+   we surface that the action did fire — separating "Aru's recovery
+   ran but the terminal still won't honor it" from "Aru never
+   actually tried".
+
+Bound to ``Ctrl+R`` with ``priority=True``. Bindings dispatch through
+Textual's binding system *before* the focused widget's ``_on_key``,
+so this path is immune to the ``Input._on_key → event.stop()`` issue
+that broke Layer 12. The user has a guaranteed-fire keystroke
+regardless of focus state.
+
+**What Layer 13 does NOT fix:**
+
+* It does not trace the emitter — same as Layer 7/9/10/12, the cause
+  of the disable is still outside our reach (likely a ConPTY / Windows
+  Terminal interaction during display power transitions).
+* It is not automatic — requires a user keystroke. Layers 9, 10, and
+  the (broken) 12 attempted automatic recovery; Layer 13 is the
+  manual fallback while we figure out which automatic trigger to
+  add. Candidates for a future Layer 14 if the manual shake proves
+  effective: hook ``AppFocus`` events, detect long gaps in the
+  periodic tick (wake-from-sleep signature), or move the keystroke
+  rearm from ``on_key`` to ``on_input_changed`` so it actually fires
+  during typing.
+
+**Why this is Layer 13 and not a rewrite of Layers 9/10/12:** the
+two failure modes (printable-key absorption and mouse-only-shake
+insufficient) point at distinct fixes; folding them into the existing
+periodic / turn-boundary callers would make every tick emit 12
+escapes plus a Windows console mode call (currently 8 + nothing),
+which is wasteful when the simple shake is enough — and would still
+not fix the printable-key absorption bug. Keeping the strong shake
+in a user-invoked path means:
+
+* The cheap path (Layer 9/10) keeps running every 3s with mouse-only.
+* The full path (Layer 13) runs only when the user signals "I
+  noticed the wheel is dead, please fix it".
+* If the cheap path is actually sufficient most of the time, we
+  don't pay the heavier cost on every tick.
+
+If, after Layer 13 ships, the user reports that ``Ctrl+R`` reliably
+recovers but the automatic paths still don't, that proves the strong
+shake is what works and Layers 9/10/12 should be upgraded — that's
+Layer 14's signal. If even ``Ctrl+R`` doesn't recover, the hypothesis
+shifts to "VT escapes are not enough, need ``SetConsoleMode`` direct
+or alt-screen toggle", which is Layer 14 in the other direction.
 """
 
 from __future__ import annotations
