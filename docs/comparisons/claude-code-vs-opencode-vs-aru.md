@@ -21,11 +21,11 @@
 | 4  | Gerenciamento de contexto e custo                   | 15%  | 9.5         | 8.5      | 8.5 |
 | 5  | DX e ergonomia do workflow                          | 15%  | 9.0         | 8.5      | 7.0 |
 | 6  | Suporte a modelos e flexibilidade de backend        | 5%   | 6.5         | 9.5      | 8.5 |
-| 7  | Capacidades multi-agente e paralelismo              | 5%   | 9.5         | 7.5      | 8.0 |
+| 7  | Capacidades multi-agente e paralelismo              | 5%   | 9.5         | 7.5      | 8.5 |
 | 8  | Qualidade do code editing                           | 5%   | 9.0         | 8.5      | 7.5 |
 | 9  | Observabilidade e debugging do próprio agente       | 5%   | 8.5         | 9.0      | 7.5 |
 | 10 | Extensibilidade e ecossistema                       | 5%   | 8.5         | 9.0      | 6.5 |
-| —  | **Média ponderada**                                 | 100% | **9.05**    | **8.55** | **7.83** |
+| —  | **Média ponderada**                                 | 100% | **9.05**    | **8.55** | **7.85** |
 
 ---
 
@@ -222,19 +222,32 @@ exóticos.
 Claude Code tem `AgentTool/runAgent.ts`, `forkSubagent.ts`,
 `built-in/generalPurposeAgent.ts`, agentes em background com auto-background
 após 120s, _teammates_ (`isTeammate`, `useTeammateViewAutoExit.ts`),
-_swarms_ (`useSwarmInitialization.ts`, `useSwarmPermissionPoller.ts`), agentes
+_swarms_ (`useSwarmInitialization.ts`, `useSwarmPermissionPoller.ts`,
+`SendMessageTool` com mailbox por team — gated atrás de `isAgentSwarmsEnabled()`,
+modo experimental, **não disponível no fluxo subagent default**), agentes
 remotos (`RemoteAgentTask`, `teleportToRemote`), tasks paralelas
-(`TaskCreateTool/`, `TaskListTool/`, `TaskOutputTool/`, `TaskStopTool/`).
-Modo coordinator (`coordinator/coordinatorMode.ts`). Nota **9.5**.
+(`TaskCreateTool/`, `TaskListTool/`, `TaskOutputTool/`, `TaskStopTool/`),
+modo coordinator (`coordinator/coordinatorMode.ts`), cap explícito de
+concorrência (`services/tools/toolOrchestration.ts:8-12` define
+`CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY` com default 10 + partição
+read-only vs mutating em `partitionToolCalls`), e visualização live rica
+(`components/tasks/BackgroundTaskStatus.tsx` com pills coloridas por agente,
+`agentColorManager.ts`, e três dialogs especializados —
+`AsyncAgentDetailDialog`, `InProcessTeammateDetailDialog`,
+`RemoteSessionDetailDialog`). Nota **9.5**.
 
 OpenCode tem `session/processor.ts` orquestrando, `task.ts` como tool,
 `Task.ts` como serviço, suporte a sub-sessões via `parentID` no schema,
-modo `subagent`/`primary`/`all` no `agent.ts`. Mas o paralelismo é mais
-modesto — não há _swarms_ ou auto-background. Nota **7.5**.
+modo `subagent`/`primary`/`all` no `agent.ts`. **Não tem** swarms,
+auto-background, cap de concorrência (delega ao Vercel AI SDK), worktree
+isolation por subagent, traces persistidos por subagent, ou comunicação
+inter-worker. A visualização live é mínima: `cli/cmd/tui/component/subagent-footer.tsx`
+só mostra um contador "X of Y siblings" quando o usuário navegou para um
+subagent específico — não há painel global de workers ativos. Nota **7.5**.
 
 Aru tem `delegate_task` (`aru/tools/delegate.py`) com `MAX_SUBAGENT_DEPTH = 5`,
 catálogo de subagents especializados em `aru/agents/catalog.py`
-(explorer/verifier/reviewer/guide/plan/executor/build, cada um com seu
+(explorer/verification/reviewer/guide/plan/executor/build, cada um com seu
 próprio toolset e permissions via `mode="subagent"`), `fork_ctx()` para
 isolamento por contextvars, traces persistidos em
 `.aru/sessions/<id>/subagents/<task_id>/{trace.json,metadata.json}`,
@@ -261,17 +274,60 @@ no próximo turno do orquestrador — paridade explícita com `shouldRunAsync`
 da `AgentTool.tsx` da CC, citado no docstring. Comando `/bg` lista tasks
 ativas. OpenCode não tem equivalente — seu `task.ts` é sempre bloqueante.
 
-Falta a CC: reducer/aggregator estruturado (hoje a agregação dos N
-resultados é prosa do orquestrador, sem helper tipo `dispatch_swarm(tasks,
-reducer)`), cap de concorrência / backpressure (10 delegates num batch
-disparam todos), comunicação inter-worker (cada fork é isolado, sem
-scratchpad compartilhado), padrões hierárquicos formais (planner → fan-out
-→ reviewer hoje é improvisado pelo prompt do orquestrador), agentes remotos
-com teleport (`teleportToRemote`), coordinator-mode dedicado e visualização
-side-by-side de workers ativos na TUI. Nota **8.0** — acima de OpenCode (7.5)
-por background execution + fan-out paralelo + worktree isolation por worker
-+ catálogo de papéis; abaixo da CC porque ainda falta a infraestrutura de
-swarm coordenado, reducer estruturado, remote agents e cap de concorrência.
+**Visualização live (gap fechado em `feat/swarm-agents`):** `aru/tui/widgets/subagent_panel.py`
+mostra uma row por subagent ativo, com cor estável determinística por
+`agent_name` (sha256 → palette de 8), ícone de status (`↻`/`✓`/`⊘`/`✗`),
+tool em curso atualizada via dois novos eventos do bus (`subagent.tool.started`
+/ `subagent.tool.completed`, emitidos do loop streaming em `delegate.py`),
+e fade após 3s ao concluir. Hidden quando idle (`display: none` flip via
+`-busy` class). Mais simples que `BackgroundTaskStatus.tsx` da CC
+(verticais vs horizontal pills) mas materialmente equivalente em
+informação. Acompanhado de fix dos paths de cancel/error que antes não
+emitiam `subagent.complete` — bug latente que deixaria a row girando
+para sempre.
+
+**Não-gaps confirmados contra CC e OpenCode (correções de avaliações
+anteriores):**
+
+- _Reducer/aggregator estruturado:_ nenhum dos dois rivais tem isso. CC
+  faz a "agregação" da `/batch` skill (`src/skills/bundled/batch.ts:78-87`)
+  via regex sobre prosa do orquestrador; OpenCode (`tool/task.ts:138-144`)
+  só empacota a saída em `<task_result>...</task_result>` por chamada.
+  A síntese contextual feita pelo orquestrador (que tem a conversa toda)
+  é estritamente superior a um reducer-agent built-in com prompt fixo.
+- _Padrões hierárquicos formais:_ `coordinatorMode.ts:200-218` e a
+  `/batch` skill da CC são **prompts**, não código. OpenCode só tem
+  `mode: "subagent"|"primary"|"all"` em `Agent.Info`. Aru já replica esse
+  padrão pelo catálogo + prompt do orquestrador. Não há `executeWorkflow({phases})`
+  em nenhuma das três.
+- _Comunicação inter-worker:_ existe na CC só no modo experimental "Agent
+  Teams" (`SendMessageTool.ts` + mailbox em `teammateMailbox.ts`), gated
+  atrás de `isAgentSwarmsEnabled()` em `AgentTool.tsx:262-264`. No fluxo
+  subagent default, CC faz spawn → run → resultado → fim, exatamente como
+  Aru e OpenCode. Migrar para peers persistentes não é "preencher gap" —
+  é pivot arquitetural (daemon, mailbox, identity registry) sem demanda
+  observável em CLI single-user.
+
+**Gaps reais que ainda existem:**
+
+- _Cap de concorrência:_ CC tem `runToolsConcurrently` com pool de
+  geradores (`utils/generators.ts:32-46`) e default 10. Aru não. OpenCode
+  também não. Hoje o risco no Aru é baixo (modelo raramente emite >5
+  delegates/turn), mas vira problema com skills `/batch`-style. Custo de
+  fechar é trivial (~20 LOC, opt-in via `ARU_MAX_PARALLEL_DELEGATES`).
+- _Agentes remotos com teleport_ (`teleportToRemote`, `RemoteAgentTask`),
+  _scheduled crons_ (`ScheduleCronTool`), _Agent Teams experimental_ —
+  são features primeiras da CC sem demanda equivalente no Aru.
+
+Nota **8.5** — acima de OpenCode (7.5) por background execution + fan-out
+paralelo + worktree isolation + catálogo + traces persistidos + visualização
+live (após `feat/swarm-agents`); abaixo da CC (9.5) pelo cap de concorrência,
+agentes remotos, scheduled crons e o modo Agent Teams experimental. Bump
+de 8.0 → 8.5 na revisão pós-implementação reflete duas correções: (a) três
+itens antes listados como gaps (reducer, inter-worker comm default,
+padrões hierárquicos formais) foram confirmados como não-gaps por
+inspeção do fonte de CC e OpenCode, e (b) o `SubagentPanel` fechou o
+único gap de visualização material vs CC.
 
 ### Critério 8 — Qualidade do code editing (peso 5%)
 
@@ -337,7 +393,7 @@ em `.agents/commands/`, custom tools em `.aru/tools/` ou `.agents/tools/`,
 custom plugins em `.aru/plugins/`, sistema de instalação de plugins
 inspirado no OpenCode (`plugin_cache.py` — install via github:user/repo,
 git URL, file path, com manifest `aru-plugin.json` + semver via `engines.aru`,
-file locks para concorrência), 12 hook events. Falta marketplace, SDK
+file locks para concorrência), 28 hook events. Falta marketplace, SDK
 externo, integrações third-party prontas (Slack/GitHub/IDE), documentação
 ainda em fase de _internal-only_, comunidade pequena. Nota **6.5**.
 
@@ -346,7 +402,7 @@ ainda em fase de _internal-only_, comunidade pequena. Nota **6.5**.
 ## 3. Análise em prosa
 
 **Resumo do ranking.** Claude Code lidera com **9.05**, com vantagem de
-**0.50 ponto** sobre OpenCode (**8.55**) e **1.22 ponto** sobre Aru (**7.83**).
+**0.50 ponto** sobre OpenCode (**8.55**) e **1.20 ponto** sobre Aru (**7.85**).
 A liderança da CC vem da maturidade do agent loop, da micro-compactação
 sofisticada e do volume bruto de capacidades — é uma ferramenta que
 acumulou décadas-equivalentes de engenharia de produção em pouco tempo.
@@ -390,25 +446,30 @@ com circuit breaker, AST tree-sitter, LSP próprio com 5 tools, plugin
 install via git URL com manifest+semver. **Multi-agente sólido:**
 `delegate_task` com fan-out paralelo via multi-call, `run_in_background=True`
 com fila `<task-notification>` (paridade direta com `shouldRunAsync` da CC),
-worktree isolation opcional por worker, catálogo de papéis especializados.
-Tudo isso em apenas 85 arquivos Python. Ponto fraco: a TUI é boa mas o
-ambiente em volta tem menos refinamento que CC/OpenCode (sem virtualização
-avançada, sem voice, sem fila visível); o multi-agente carece de reducer
-estruturado, cap de concorrência e swarms/teammates/remote coordenados;
-ecossistema/integrações third-party praticamente inexistentes; documentação
-é interna. É claramente a ferramenta mais nova das três e isso aparece nas
-notas dos critérios 5, 9 e 10.
+worktree isolation opcional por worker, catálogo de papéis especializados,
+visualização live de paralelismo na TUI via `SubagentPanel` (gap fechado
+em `feat/swarm-agents`). Tudo isso em apenas 85 arquivos Python. Ponto
+fraco: a TUI é boa mas o ambiente em volta tem menos refinamento que
+CC/OpenCode (sem virtualização avançada, sem voice, sem fila visível);
+o multi-agente carece de cap de concorrência, agentes remotos e scheduled
+crons da CC; ecossistema/integrações third-party praticamente inexistentes;
+documentação é interna. É claramente a ferramenta mais nova das três e
+isso aparece nas notas dos critérios 5, 9 e 10.
 
 **Diferenças críticas.** Onde os três mais se distanciam é no **critério 10
 (extensibilidade)** — OpenCode 9.0 vs Aru 6.5. OpenCode tem SDK em JS, server
 público, marketplace nascendo; Aru tem instalação de plugins via git mas sem
 ainda uma comunidade ou marketplace. A segunda maior é no **critério 7
-(multi-agente)** — CC tem 9.5, Aru tem 8.0. Aru já tem fan-out paralelo via
+(multi-agente)** — CC tem 9.5, Aru tem 8.5. Aru já tem fan-out paralelo via
 multi-call de `delegate_task`, background execution com notificação
-assíncrona, worktree isolation por worker e catálogo de papéis especializados,
-mas falta reducer/aggregator estruturado, cap de concorrência, swarms
-coordenadas dedicadas, agentes remotos com teleport e coordinator-mode
-explícito que a CC tem como recursos primeiros. A terceira é no **critério 6
+assíncrona, worktree isolation por worker, catálogo de papéis especializados
+e visualização live (`SubagentPanel`); o gap remanescente é cap de
+concorrência (real, ~20 LOC para fechar), agentes remotos com teleport,
+scheduled crons e o modo Agent Teams experimental (gated por
+`isAgentSwarmsEnabled()` na própria CC). Confirmamos por inspeção do
+fonte que **reducer estruturado, comunicação inter-worker no fluxo
+default e padrões hierárquicos formais NÃO são gaps** — nenhum dos dois
+rivais os implementa de fato. A terceira maior diferença é no **critério 6
 (flexibilidade de backend)** — OpenCode 9.5 vs CC 6.5. Aqui Aru se aproxima
 de OpenCode (8.5) por ser provider-agnóstico desde o início. Vale notar que
 no **critério 4 (gerenciamento de contexto)** Aru agora **empata com OpenCode
@@ -437,9 +498,9 @@ mais baixo, OpenCode é o ponto-doce; para quem prioriza customização total
 
 ## 4. Notas de rodapé
 
-- **Versões observadas:** Aru `0.47.0` (commit `d6d3b43`), Claude Code (versão
-  pública distribuída como CLI; sem tag aparente no tree), OpenCode (sem
-  tag inspecionada; o package `desktop` está em `1.3.17`).
+- **Versões observadas:** Aru `0.48.0` (branch `feat/swarm-agents`), Claude
+  Code (versão pública distribuída como CLI; sem tag aparente no tree),
+  OpenCode (sem tag inspecionada; o package `desktop` está em `1.3.17`).
 - **Nenhuma busca web foi necessária** — as três ferramentas estão presentes
   como código-fonte completo no disco. As avaliações se baseiam em leitura
   direta de implementação, não em material promocional.
@@ -454,17 +515,31 @@ mais baixo, OpenCode é o ponto-doce; para quem prioriza customização total
   planner/tasklist completo (`create_task_list`/`update_task` +
   `update_plan_step` com painel Rich live na TUI, paridade com `src/tasks/`
   da CC), MCP gateway com circuit breaker, plugin install com manifest
-  semver, hooks lifecycle (12 eventos), `delegate_task(run_in_background=True)`
-  com fila `pending_notifications` e injeção `<task-notification>` (paridade
-  direta com `shouldRunAsync` da CC), fan-out paralelo via multi-call e
-  worktree isolation opcional por subagente.
-- **Onde Aru está atrás:** reducer/aggregator estruturado e cap de
-  concorrência para o fan-out, swarms/teammates/agentes remotos coordenados
-  (CC), time-based compaction e AgentSummary hierárquico (CC), doom-loop
-  detection explícito (OpenCode tem `DOOM_LOOP_THRESHOLD = 3`),
-  ecossistema externo (SDK, marketplace, integrações), modos de input
-  avançados (vim, voice, virtualização avançada), tracking de custo por
-  ferramenta.
+  semver, hooks lifecycle (28 eventos — `subagent.tool.started`/`.completed`
+  adicionados em `feat/swarm-agents`),
+  `delegate_task(run_in_background=True)` com fila `pending_notifications` e
+  injeção `<task-notification>` (paridade direta com `shouldRunAsync` da CC),
+  fan-out paralelo via multi-call, worktree isolation opcional por subagente,
+  e visualização live de paralelismo via `SubagentPanel` na TUI (paridade
+  funcional com `BackgroundTaskStatus.tsx` da CC, ainda mais que OpenCode
+  cujo `subagent-footer.tsx` só mostra contador de siblings).
+- **Onde Aru está atrás:** cap de concorrência opt-in (CC tem `getMaxToolUseConcurrency`
+  default 10 + partição read-only/mutating), agentes remotos com teleport
+  (`RemoteAgentTask`/`teleportToRemote`) e scheduled crons (`ScheduleCronTool`)
+  da CC, modo Agent Teams experimental da CC (`SendMessageTool` + mailbox,
+  gated por `isAgentSwarmsEnabled()`), time-based compaction e AgentSummary
+  hierárquico (CC), doom-loop detection explícito (OpenCode tem
+  `DOOM_LOOP_THRESHOLD = 3`), ecossistema externo (SDK, marketplace,
+  integrações), modos de input avançados (vim, voice, virtualização avançada),
+  tracking de custo por ferramenta.
+- **Não-gaps confirmados (correção de análises anteriores):**
+  reducer/aggregator estruturado, comunicação inter-worker no fluxo default
+  e padrões hierárquicos formais foram inicialmente listados como gaps, mas
+  inspeção dos fontes mostrou que **nenhum dos dois rivais os implementa de
+  fato** — CC só tem comunicação inter-worker no modo Agent Teams
+  experimental gated, e tanto CC quanto OpenCode codificam padrões
+  hierárquicos via prompt (não código). Manter esses itens como "atrás"
+  era ruído.
 - **Onde Aru está à frente:** **recuperação reativa de overflow** —
   `_aggressive_prune` em `cache_patch.py` é disparado por
   `_is_context_overflow_error` quando o provider rejeita a chamada por

@@ -67,6 +67,8 @@ VALID_HOOKS = frozenset({
     # Sub-agent (Tier 2 #3)
     "subagent.start",            # After delegate_task spawns a sub-agent
     "subagent.complete",         # After sub-agent terminates (ok, error, cancelled)
+    "subagent.tool.started",     # Inside a sub-agent: a tool call started
+    "subagent.tool.completed",   # Inside a sub-agent: a tool call completed
 
     # Turn lifecycle (Tier 2 #3)
     "turn.start",                # Beginning of runner.prompt for a new user turn

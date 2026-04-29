@@ -103,6 +103,31 @@ class SubagentCompleteEvent(BaseEvent):
     duration_ms: float = 0.0
 
 
+class SubagentToolStartedEvent(BaseEvent):
+    """A tool call started inside a running sub-agent.
+
+    Distinct from ``tool.called`` — that event fires from the orchestrator's
+    own tool loop. ``subagent.tool.started`` fires from inside a delegated
+    sub-agent's stream and carries the parent ``task_id`` so the TUI's
+    SubagentPanel can update the right row.
+    """
+
+    event_type: Literal["subagent.tool.started"] = "subagent.tool.started"
+    task_id: str = ""           # subagent's task_id (the row key)
+    tool_id: str = ""
+    tool_name: str = ""
+    tool_args_preview: str = ""  # first ~80 chars of args for the row label
+
+
+class SubagentToolCompletedEvent(BaseEvent):
+    event_type: Literal["subagent.tool.completed"] = "subagent.tool.completed"
+    task_id: str = ""
+    tool_id: str = ""
+    tool_name: str = ""
+    duration_ms: float = 0.0
+    error: str | None = None
+
+
 # ── Workspace / cwd ───────────────────────────────────────────────────
 
 
@@ -176,6 +201,8 @@ AruEvent = Union[
     ToolCompletedEvent,
     SubagentStartEvent,
     SubagentCompleteEvent,
+    SubagentToolStartedEvent,
+    SubagentToolCompletedEvent,
     CwdChangedEvent,
     FileChangedEvent,
     PermissionDeniedEvent,
@@ -196,6 +223,8 @@ EVENT_MODELS: dict[str, type[BaseEvent]] = {
     "tool.completed": ToolCompletedEvent,
     "subagent.start": SubagentStartEvent,
     "subagent.complete": SubagentCompleteEvent,
+    "subagent.tool.started": SubagentToolStartedEvent,
+    "subagent.tool.completed": SubagentToolCompletedEvent,
     "cwd.changed": CwdChangedEvent,
     "file.changed": FileChangedEvent,
     "permission.denied": PermissionDeniedEvent,

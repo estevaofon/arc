@@ -48,6 +48,7 @@ aru/
 │       ├── inline_choice.py # InlineChoicePrompt — approval prompt mounted inline in ChatPane (keeps diff/plan visible above)
 │       ├── loaded_pane.py  # LoadedPane — bottom sidebar, boot breadcrumbs
 │       ├── status.py   # StatusPane — session/model/tokens/cost/mode bottom bar
+│       ├── subagent_panel.py # SubagentPanel — live rows for fan-out subagents (gap 5)
 │       ├── thinking.py # ThinkingIndicator — rotating phrase + spinner while busy
 │       └── tools.py    # ToolsPane — legacy live tool-call sidebar (not mounted)
 ├── session.py          # Session state, persistence, plan tracking

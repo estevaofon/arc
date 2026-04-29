@@ -45,6 +45,7 @@ from aru.tui.widgets.completer import SlashCompleter
 from aru.tui.widgets.context_pane import ContextPane
 from aru.tui.widgets.loaded_pane import LoadedPane
 from aru.tui.widgets.status import StatusPane
+from aru.tui.widgets.subagent_panel import SubagentPanel
 from aru.tui.widgets.thinking import ThinkingIndicator
 from aru.tui.widgets.tools import ToolsPane
 
@@ -329,6 +330,7 @@ class AruApp(App):
                     ctx=self.ctx,
                 )
         yield ThinkingIndicator()
+        yield SubagentPanel()
         yield StatusPane(session=self.session)
         yield SlashCompleter()
         yield PromptInput(
@@ -1588,6 +1590,31 @@ class AruApp(App):
             mgr.subscribe(
                 "metrics.updated",
                 lambda p: _dispatch(ctx_pane.update_from_metrics, p),
+            )
+
+        # SubagentPanel — live view of fan-out workers + their current
+        # tool. Hidden when no sub-agent is running. Subscribes to four
+        # events emitted by ``aru.tools.delegate``.
+        try:
+            sub_panel = self.query_one(SubagentPanel)
+        except Exception:
+            sub_panel = None
+        if sub_panel is not None:
+            mgr.subscribe(
+                "subagent.start",
+                lambda p: _dispatch(sub_panel.on_subagent_start, p),
+            )
+            mgr.subscribe(
+                "subagent.complete",
+                lambda p: _dispatch(sub_panel.on_subagent_complete, p),
+            )
+            mgr.subscribe(
+                "subagent.tool.started",
+                lambda p: _dispatch(sub_panel.on_subagent_tool_started, p),
+            )
+            mgr.subscribe(
+                "subagent.tool.completed",
+                lambda p: _dispatch(sub_panel.on_subagent_tool_completed, p),
             )
 
     # ── Actions ──────────────────────────────────────────────────────

@@ -421,11 +421,23 @@ Do not create documentation files unless explicitly asked.
                 "task": (task or "")[:500],
             })
 
+            from aru.runtime import _schedule_publish as _sched_t
             try:
                 async for event in agent_instance.arun(task, stream=True, stream_events=True, yield_run_output=True):
                     if is_aborted():
                         _trace.status = "cancelled"
                         _trace.ended_at = _time.monotonic()
+                        # Emit subagent.complete with status=cancelled so the
+                        # TUI's SubagentPanel can mark + reap the row instead
+                        # of leaving it stuck in "running". Mirrors the
+                        # complete path below.
+                        _sched_t("subagent.complete", {
+                            "task_id": _trace.task_id,
+                            "status": "cancelled",
+                            "duration": (_trace.ended_at or 0) - (_trace.started_at or 0),
+                            "tokens_in": _trace.tokens_in,
+                            "tokens_out": _trace.tokens_out,
+                        })
                         return f"[{label} | task_id={task_id_for_output}] Cancelled by user."
                     if isinstance(event, RunOutput):
                         run_output = event
@@ -433,9 +445,23 @@ Do not create documentation files unless explicitly asked.
                     elif isinstance(event, ToolCallStartedEvent):
                         if hasattr(event, "tool") and event.tool:
                             t_id = getattr(event.tool, "tool_call_id", None) or (event.tool.tool_name or "tool")
+                            t_name_start = event.tool.tool_name or "tool"
+                            t_args_start = getattr(event.tool, "tool_args", None)
                         else:
                             t_id = getattr(event, "tool_call_id", None) or getattr(event, "tool_name", "tool")
+                            t_name_start = getattr(event, "tool_name", "tool")
+                            t_args_start = getattr(event, "tool_args", None)
                         _tool_starts[t_id] = _time.monotonic()
+                        # Live TUI: tell the SubagentPanel which subagent is
+                        # currently running which tool, so a fan-out of N
+                        # delegates renders as N rows each showing its own
+                        # in-flight tool instead of opaque "running…".
+                        _sched_t("subagent.tool.started", {
+                            "task_id": _trace.task_id,
+                            "tool_id": str(t_id),
+                            "tool_name": t_name_start,
+                            "tool_args_preview": (str(t_args_start) if t_args_start else "")[:80],
+                        })
                     elif isinstance(event, ToolCallCompletedEvent):
                         if hasattr(event, "tool") and event.tool:
                             t_id = getattr(event.tool, "tool_call_id", None) or getattr(event.tool, "tool_name", "tool")
@@ -452,12 +478,29 @@ Do not create documentation files unless explicitly asked.
                             "args_preview": (str(t_args) if t_args else "")[:150],
                             "duration": round(dur, 3),
                         })
+                        _sched_t("subagent.tool.completed", {
+                            "task_id": _trace.task_id,
+                            "tool_id": str(t_id),
+                            "tool_name": t_name,
+                            "duration_ms": round(dur * 1000, 1),
+                            "error": None,
+                        })
                     elif isinstance(event, RunContentEvent):
                         if hasattr(event, "content") and event.content:
                             result_content += event.content
             except Exception:
                 _trace.status = "error"
                 _trace.ended_at = _time.monotonic()
+                # Same rationale as cancel: surface a complete event with
+                # status=error so the panel can stop the row instead of
+                # leaving it spinning forever.
+                _sched_t("subagent.complete", {
+                    "task_id": _trace.task_id,
+                    "status": "error",
+                    "duration": (_trace.ended_at or 0) - (_trace.started_at or 0),
+                    "tokens_in": _trace.tokens_in,
+                    "tokens_out": _trace.tokens_out,
+                })
                 raise
 
             if run_output and hasattr(run_output, "metrics") and run_output.metrics:
