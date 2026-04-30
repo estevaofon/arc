@@ -313,6 +313,13 @@ class PasteAwarePromptArea(PromptArea):
     """
 
     async def _on_paste(self, event) -> None:
+        # Do NOT call ``super()._on_paste(event)`` here. Textual's
+        # ``MessagePump._on_message`` already walks the MRO and invokes
+        # every ``_on_paste`` along the chain (see textual/message_pump.py
+        # ``_get_dispatch_methods``), so ``TextArea._on_paste`` runs
+        # automatically. Calling ``super()`` from this override would
+        # insert the pasted text twice — the duplication bug users hit
+        # when pasting into the prompt.
         text = getattr(event, "text", "") or ""
         line_count = text.count("\n") + 1 if text else 0
         if line_count > 1:
@@ -324,6 +331,3 @@ class PasteAwarePromptArea(PromptArea):
                 )
             except Exception:
                 pass
-        # Don't intercept — let TextArea's normal paste path insert the
-        # text into the buffer at the cursor.
-        await super()._on_paste(event)

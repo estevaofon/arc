@@ -147,10 +147,48 @@ async def test_multiline_paste_lands_in_visible_buffer():
         inp = app.query_one(PromptArea)
         inp.focus()
         await pilot.pause()
-        inp.post_message(events.Paste(text=pasted))
+        # Post to the App, not the input, so the test mirrors the real
+        # terminal-driver pipeline: driver → App.on_event → forward to
+        # focused widget. Posting directly to ``inp`` would bypass that
+        # branch and the bubbled Paste event would be re-forwarded by
+        # ``App.on_event`` (since ``is_forwarded`` was never set),
+        # producing an artificial second dispatch.
+        app.post_message(events.Paste(text=pasted))
         await pilot.pause()
-        # Whatever the user pastes is what they see and submit.
-        assert pasted in inp.value
+        # Whatever the user pastes is what they see and submit — and
+        # exactly once. ``PasteAwarePromptArea._on_paste`` must NOT
+        # call ``super()._on_paste``; Textual's dispatcher already
+        # walks the MRO and invokes ``TextArea._on_paste``.
+        assert inp.value == pasted
+
+
+@pytest.mark.asyncio
+async def test_paste_does_not_duplicate_in_buffer():
+    """Regression: paste through the App pipeline lands exactly once.
+
+    Prior to the fix, ``PasteAwarePromptArea._on_paste`` called
+    ``super()._on_paste(event)`` explicitly while Textual's MRO
+    dispatcher already invoked the parent ``_on_paste``, so every
+    paste was inserted twice — visible to the user as duplicated text
+    in the input box.
+    """
+    from textual import events
+
+    from aru.tui.app import AruApp
+    from aru.tui.widgets.prompt_area import PromptArea
+
+    app = AruApp()
+    pasted = "abc"
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        inp = app.query_one(PromptArea)
+        inp.focus()
+        await pilot.pause()
+        app.post_message(events.Paste(text=pasted))
+        await pilot.pause()
+        assert inp.value == pasted, (
+            f"paste duplicated: expected {pasted!r}, got {inp.value!r}"
+        )
 
 
 @pytest.mark.asyncio

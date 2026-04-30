@@ -1892,6 +1892,57 @@ class AruApp(App):
             sidebar.add_class("-hidden")
             chat.add_class("-hide-sidebar")
 
+    def copy_to_clipboard(self, text: str) -> None:
+        """Native-OS clipboard write that bypasses the Textual writer queue.
+
+        Textual's default ``copy_to_clipboard`` writes an OSC 52 escape
+        through ``self._driver.write`` (textual/app.py:1755). On Windows
+        the driver hands the bytes to a ``WriterThread`` whose internal
+        ``Queue`` has ``MAX_QUEUED_WRITES = 30``
+        (textual/drivers/_writer_thread.py:9). During a streaming agent
+        turn the compositor enqueues many paint sequences per second; if
+        ConPTY drains slower than producers fill the queue, ``Queue.put``
+        blocks the *main thread* — which means the asyncio loop freezes,
+        Ctrl+C key events sit unprocessed, and the user perceives "the
+        copy didn't happen, the thread is doing something else." Even
+        when the queue isn't full, the OSC 52 sequence is serialised
+        behind every queued paint, so the actual clipboard update can
+        arrive seconds after the keypress (and may be dropped by the
+        terminal's OSC parser when interleaved with other escapes).
+
+        On Windows we sidestep the queue entirely by writing through the
+        Win32 clipboard API. ``win32clipboard.SetClipboardText`` runs
+        synchronously and is normally microseconds — even when another
+        app holds the clipboard briefly, ``OpenClipboard`` returns fast.
+        We still update ``self._clipboard`` so Textual's
+        ``app.clipboard`` property keeps mirroring the last copied text,
+        and we fall back to the OSC 52 path if the Win32 call raises.
+
+        On non-Windows platforms we keep the OSC 52 path — the Linux
+        driver writes synchronously to stdout without an intermediate
+        bounded queue, so the saturation issue does not apply.
+        """
+        self._clipboard = text
+        if sys.platform == "win32":
+            try:
+                self._win32_set_clipboard(text)
+                return
+            except Exception:
+                # Fall through to OSC 52 — better than silently dropping.
+                pass
+        super().copy_to_clipboard(text)
+
+    @staticmethod
+    def _win32_set_clipboard(text: str) -> None:
+        import win32clipboard
+
+        win32clipboard.OpenClipboard()
+        try:
+            win32clipboard.EmptyClipboard()
+            win32clipboard.SetClipboardText(text, win32clipboard.CF_UNICODETEXT)
+        finally:
+            win32clipboard.CloseClipboard()
+
     def _gather_selected_text(self) -> str:
         """Collect any active text selection across the App.
 

@@ -8,6 +8,37 @@ pytest.importorskip("textual")
 
 
 @pytest.mark.asyncio
+async def test_text_selection_releases_anchor():
+    """Starting a click+drag selection releases ChatPane's auto-scroll anchor.
+
+    During streaming the anchor pulls the view to the bottom on every
+    token delta. If the anchor stays engaged while the user drags to
+    select, content shifts up beneath the cursor and the selection
+    lands somewhere else — Ctrl+C copies nothing (or the wrong text),
+    which is what users hit when trying to copy mid-turn.
+    """
+    from aru.tui.app import AruApp
+    from aru.tui.widgets.chat import ChatPane
+
+    app = AruApp()
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
+        chat = app.query_one(ChatPane)
+        # Sanity: anchor engaged on mount, not yet released.
+        assert chat._anchored
+        assert not chat._anchor_released
+        # Simulate the framework signal a MouseDown emits when starting
+        # a screen-level drag selection (textual/screen.py:1938).
+        app.screen.text_selection_started_signal.publish(app.screen)
+        await pilot.pause()
+        assert chat._anchor_released, (
+            "ChatPane should release its anchor when the user starts a "
+            "drag selection, otherwise streaming content keeps shifting "
+            "the visible area beneath their cursor"
+        )
+
+
+@pytest.mark.asyncio
 async def test_add_renderable_scrollable_wraps_in_vertical_scroll():
     """Large file contents should be scrollable as their own block."""
     from rich.panel import Panel

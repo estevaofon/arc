@@ -198,6 +198,97 @@ async def test_ctrl_c_with_selection_copies(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_copy_to_clipboard_uses_win32_on_windows(monkeypatch):
+    """On Windows, ``copy_to_clipboard`` MUST go through the Win32 API
+    rather than Textual's OSC 52 path through the driver writer queue.
+
+    Why: textual's ``WriterThread`` queue (max 30 items) backs up under
+    heavy streaming and ``Queue.put`` blocks the main thread, which
+    freezes the asyncio loop and makes Ctrl+C feel like the copy never
+    happened. The Win32 path is sync and bypasses the queue entirely.
+    """
+    import sys
+
+    from aru.tui.app import AruApp
+
+    if sys.platform != "win32":
+        pytest.skip("Win32 clipboard path is Windows-only")
+
+    app = AruApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        win32_calls: list[str] = []
+        super_calls: list[str] = []
+
+        # Stub the Win32 backend so the test doesn't actually touch the OS
+        # clipboard — we only care about which path was taken.
+        monkeypatch.setattr(
+            AruApp,
+            "_win32_set_clipboard",
+            staticmethod(lambda t: win32_calls.append(t)),
+        )
+
+        # Spy on the OSC 52 fallback (Textual's base implementation).
+        from textual.app import App as _BaseApp
+        orig_super_copy = _BaseApp.copy_to_clipboard
+
+        def _spy_super(self_, t):
+            super_calls.append(t)
+            # Don't actually call the real one — would touch the driver.
+
+        monkeypatch.setattr(_BaseApp, "copy_to_clipboard", _spy_super)
+
+        app.copy_to_clipboard("hello aru")
+        await pilot.pause()
+
+    assert win32_calls == ["hello aru"], (
+        "Win32 path must run on Windows so the copy doesn't sit behind "
+        "queued paint sequences in the driver writer thread"
+    )
+    assert super_calls == [], (
+        "When Win32 succeeds, the OSC 52 fallback (super) must NOT run "
+        "— otherwise we still hit the queue we were trying to avoid"
+    )
+    # Textual's app.clipboard property must still mirror the last copy.
+    assert app.clipboard == "hello aru"
+
+
+@pytest.mark.asyncio
+async def test_copy_to_clipboard_falls_back_when_win32_raises(monkeypatch):
+    """If the Win32 call fails (e.g., another app holds the clipboard
+    handle), fall back to the OSC 52 path so the user still gets something.
+    """
+    import sys
+
+    from aru.tui.app import AruApp
+
+    if sys.platform != "win32":
+        pytest.skip("Win32 clipboard path is Windows-only")
+
+    app = AruApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        def _raise(_t):
+            raise RuntimeError("simulated OpenClipboard failure")
+
+        monkeypatch.setattr(AruApp, "_win32_set_clipboard", staticmethod(_raise))
+
+        super_calls: list[str] = []
+        from textual.app import App as _BaseApp
+        monkeypatch.setattr(
+            _BaseApp,
+            "copy_to_clipboard",
+            lambda self_, t: super_calls.append(t),
+        )
+
+        app.copy_to_clipboard("fallback text")
+        await pilot.pause()
+
+    assert super_calls == ["fallback text"]
+
+
+@pytest.mark.asyncio
 async def test_sigint_handler_replaced_during_app_lifetime():
     """While the App is running, SIGINT must not raise KeyboardInterrupt.
 

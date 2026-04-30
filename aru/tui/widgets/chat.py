@@ -1386,6 +1386,32 @@ class ChatPane(VerticalScroll):
         # Periodic flush; cheap because the reactive watcher already
         # debounces repaints when buffer doesn't actually change.
         self.set_interval(self.DEBOUNCE_SEC, self._flush_pending_delta)
+        # Pause anchor while the user is making a click+drag selection.
+        # During streaming, every token delta grows the virtual size and
+        # the anchor pulls the view to the bottom — chat content shifts
+        # up beneath the cursor mid-drag, so the selection lands on a
+        # different region than the user aimed at and Ctrl+C ends up
+        # copying nothing (or the wrong thing). Releasing the anchor at
+        # ``MouseDown`` keeps the visible content stable through the
+        # drag; ``_check_anchor`` re-engages automatically once the user
+        # scrolls back to the bottom. Subscribed with ``immediate=True``
+        # so the release happens synchronously with the mouse press,
+        # before the next streaming delta gets a chance to scroll.
+        try:
+            self.screen.text_selection_started_signal.subscribe(
+                self,
+                self._on_text_selection_started,
+                immediate=True,
+            )
+        except Exception:
+            pass
+
+    def _on_text_selection_started(self, _screen) -> None:
+        if self._anchored and not self._anchor_released:
+            try:
+                self.release_anchor()
+            except Exception:
+                pass
 
     def on_mouse_scroll_up(self, event) -> None:
         """Defensive redundancy — explicitly release the anchor on wheel-up.
