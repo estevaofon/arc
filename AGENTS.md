@@ -126,20 +126,12 @@ aru/
 
 ## Key Modules
 
-### CLI Modules (refactored from `cli.py`)
+### Notable architectural details (not in the tree)
 
-- **`cli.py`**: Entry point (`run_cli()`, `run_oneshot()`), main async REPL loop, argument parsing, non-interactive mode
-- **`agent_factory.py`**: `create_agent_from_spec(AgentSpec, ...)` — builds Agno `Agent` from a catalog spec, wires tools, permissions, hooks
-- **`runtime.py`**: `RuntimeContext` held in `contextvars`; `fork_ctx()` clones for sub-agents with fresh task store, fresh read cache, and a unique `agent_id` used by per-scope state (active skills, invoked skills) so subagents do not inherit the parent's skill context
-- **`runner.py`**: Agent execution orchestration with live streaming and plan step tracking
-- **`session.py`**: Session state (conversation history, plan tracking, model selection, token metrics). Persisted as JSON in `.aru/sessions/`
-- **`commands.py`**: Slash command definitions, help display, shell execution, user prompts
-- **`completers.py`**: Input completions, paste detection, `@file` mention resolution
-- **`context.py`**: Token optimization — pruning, truncation, and compaction of conversation history
-- **`cache_patch.py`**: Prune-aware cache boundary patching so Anthropic cache breakpoints survive pruning (parity with OpenCode)
-- **`history_blocks.py`**: Helpers for locating/manipulating conversation blocks during pruning and compaction
-- **`checkpoints.py`**: Tracks pre-edit snapshots of mutated files for undo support
-- **`display.py`**: Rich-based terminal rendering (`StreamingDisplay`, `StatusBar`, logo)
+- **`runtime.py`**: `fork_ctx()` clones context for sub-agents with fresh task store, fresh read cache, and a unique `agent_id` used by per-scope state (active skills, invoked skills) — so subagents do not inherit the parent's skill context.
+- **`agent_factory.py`**: `create_agent_from_spec(AgentSpec, ...)` builds the Agno `Agent` from a catalog spec and wires tools, permissions, hooks.
+- **`cache_patch.py`**: parity target is OpenCode's cache-boundary handling.
+- **`session.py`**: persisted as JSON in `.aru/sessions/`.
 
 ### `config.py` — Project Configuration
 
@@ -147,10 +139,6 @@ Loads project-level customization into an `AgentConfig` object:
 - `AGENTS.md` → extra instructions appended to all agent prompts
 - `.agents/commands/*.md` → custom slash commands (filename = command name)
 - `skills/<name>/SKILL.md` → custom skills (agentskills.io format, searched in `.agents/`, `.claude/`, `~/.agents/`, `~/.claude/`)
-
-### `providers.py` — Multi-Provider LLM
-
-Abstracts model creation across Anthropic, OpenAI, Ollama, Groq, OpenRouter, DeepSeek. Custom providers configurable via `aru.json`.
 
 ### `permissions.py` — Permission System
 
@@ -172,10 +160,6 @@ Single source of truth for native agents. Each entry is an `AgentSpec` with a la
 | `explorer` | explorer | subagent | `EXPLORER_TOOLS` (7, small model) | 4096 |
 
 Custom agents defined via `.agents/agents/*.md` take a separate path through `create_custom_agent_instance` and are not listed in the catalog.
-
-### `agents/planner.py` — Plan Reviewer
-
-One-shot scope check run after the plan agent produces a draft. No tools, no loop. Trims scope-creep steps while preserving the original plan text verbatim.
 
 ### `tools/codebase.py` + submodules — Core Tools + Tool Sets
 
@@ -229,17 +213,9 @@ The tool is part of `GENERAL_TOOLS` / `EXECUTOR_TOOLS` but intentionally exclude
 
 Tasklist tracks per-step subtasks during executor runs. `enter_plan_mode` / `exit_plan_mode` are a paired flag-flip — `enter_plan_mode` only sets `session.plan_mode = True` (no nested runner). The `tool_policy.py` gate then denies `PLAN_MODE_BLOCKED_TOOLS` (edit/write/bash/delegate_task) with a BLOCKED message. The build agent stays in the same loop, writes the plan as its next assistant message, then calls `exit_plan_mode(plan=...)` which shows the approval panel and flips the flag back on approval. Read-only tools pass through plan mode so the agent can still research. The `/plan` slash command is a separate, user-initiated path that runs the planner agent directly via `runner.prompt`.
 
-### `tools/mcp_client.py` — MCP Gateway
-
-Loads tools from MCP servers configured in `aru.json` and exposes them through a single gateway tool that routes calls to the right server.
-
 ### `tools/ranker.py` — File Relevance Ranking
 
 Score = `0.50 * name_match + 0.30 * structural + 0.20 * recency`
-
-### `tools/ast_tools.py` — AST Analysis
-
-Tree-sitter based Python parser. Extracts imports, classes, functions, decorators with line numbers.
 
 ### `plugins/` — Plugin System (OpenCode-compatible)
 
