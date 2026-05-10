@@ -276,7 +276,10 @@ class TestLiveMetricsAccumulation:
         s = ctx.session
         assert s.total_input_tokens == 1_500, "track_tokens must not re-add"
         assert s.total_output_tokens == 75
-        assert s.api_calls == 1
+        # api_calls is now incremented per real API request (inside
+        # _publish_live_metrics), not per turn — so the two live calls
+        # above produce api_calls == 2, not 1.
+        assert s.api_calls == 2
         # Live counters reset so the next turn starts clean.
         assert s._live_input_added == 0
         assert s._live_output_added == 0

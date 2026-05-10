@@ -348,7 +348,11 @@ class TestSession:
         assert session.total_input_tokens == 100
         assert session.total_output_tokens == 50
         assert session.total_cache_read_tokens == 30
-        assert session.api_calls == 1
+        # api_calls is no longer incremented by track_tokens — it's bumped
+        # per real API request inside cache_patch._publish_live_metrics.
+        # This unit test exercises track_tokens in isolation (no patch),
+        # so api_calls stays at 0.
+        assert session.api_calls == 0
 
     def test_track_tokens_none_metrics(self):
         session = Session()

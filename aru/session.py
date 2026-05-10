@@ -540,7 +540,11 @@ class Session:
         self.total_cache_write_tokens += max(
             0, agno_cw - self._live_cache_write_added
         )
-        self.api_calls += 1
+        # api_calls is no longer bumped here — it's incremented per real
+        # API request inside cache_patch._publish_live_metrics, which fires
+        # once per accumulate_model_metrics call. Bumping again here would
+        # double-count. Subagent runs (which skip live publish) bump
+        # api_calls themselves in delegate_task at sub-run completion.
         self.reset_live_token_counters()
         # Capture last API call's context window (set by cache_patch)
         try:
@@ -626,8 +630,20 @@ class Session:
 
     @property
     def cost_summary(self) -> str:
-        """Detailed cost breakdown for /cost command."""
-        total = self.total_input_tokens + self.total_output_tokens
+        """Detailed cost breakdown for /cost command.
+
+        Mirrors OpenCode: a single running session total — input, output,
+        and cache buckets shown side-by-side and summed into one ``total``.
+        Cache is normalized non-overlapping with input by ``cache_patch``,
+        so ``input + output + cache_read + cache_write`` is the true
+        chargeable token volume.
+        """
+        total = (
+            self.total_input_tokens
+            + self.total_output_tokens
+            + self.total_cache_read_tokens
+            + self.total_cache_write_tokens
+        )
         if total == 0:
             return "No token usage yet."
         cost = self.estimated_cost
@@ -635,7 +651,7 @@ class Session:
         lines = [
             f"Session cost: {cost_str}",
             f"",
-            f"Cumulative tokens:",
+            f"Session tokens:",
             f"  input:       {self.total_input_tokens:,}",
             f"  output:      {self.total_output_tokens:,}",
         ]
@@ -645,8 +661,13 @@ class Session:
             lines.append(f"  cache_write: {self.total_cache_write_tokens:,}")
         lines.append(f"  total:       {total:,}")
         lines.append(f"  api calls:   {self.api_calls}")
-        if self.last_input_tokens > 0:
-            ctx_total = self.last_input_tokens + self.last_output_tokens + self.last_cache_read + self.last_cache_write
+        if self.last_input_tokens > 0 or self.last_cache_read > 0:
+            ctx_total = (
+                self.last_input_tokens
+                + self.last_output_tokens
+                + self.last_cache_read
+                + self.last_cache_write
+            )
             lines.append(f"")
             lines.append(f"Last context window: {ctx_total:,}")
             lines.append(f"  input:       {self.last_input_tokens:,}")
@@ -677,6 +698,84 @@ class Session:
                     lines.append(f"  overflow saves:  {mc['overflow_recoveries']:,}")
         except Exception:
             pass
+        return "\n".join(lines)
+
+    @property
+    def calls_summary(self) -> str:
+        """Per-API-call breakdown — answers "why are there N api_calls?".
+
+        Pulls from ``cache_patch._call_history`` (the ring buffer that
+        records every fire of ``accumulate_model_metrics``). Each row
+        shows: ``model_type`` (MODEL vs PARSER_MODEL vs MEMORY_MODEL vs
+        recovery), ``model_id``, normalized input, output, cache hits,
+        stop_reason, and the agno call site that triggered it.
+
+        Use to distinguish: a ``stop_reason=max_tokens`` row followed by a
+        smaller row = the streaming recovery loop fired. Two
+        ``MODEL`` rows = the agent did a tool call round. Mixed model_types
+        = optional features (memory/parser/output models) are active.
+        """
+        try:
+            from aru.cache_patch import get_call_history
+        except ImportError:
+            return "Call history not available."
+        history = get_call_history()
+        if not history:
+            return "No API calls yet."
+        lines = [f"Total recorded calls: {len(history)}", ""]
+        for c in history:
+            mt = c.get("model_type", "")
+            if mt.startswith("ModelType."):
+                mt = mt[len("ModelType."):]
+            req = c.get("request") or {}
+            n_msgs = req.get("n_messages", 0)
+            roles = req.get("roles") or {}
+            roles_str = ", ".join(f"{r}={n}" for r, n in sorted(roles.items()))
+            n_tools = req.get("n_tools", 0)
+            total_chars = req.get("total_chars", 0)
+            est_prompt_tokens = total_chars // 4 if total_chars else 0
+
+            lines.append(
+                f"── Call #{c.get('n', 0)} "
+                f"[{mt} / {c.get('model_id', '')}] ──"
+            )
+            lines.append(
+                f"  request:  {n_msgs} msgs ({roles_str}), "
+                f"{n_tools} tools, ~{est_prompt_tokens:,} tok ({total_chars:,} chars)"
+            )
+            first = (req.get("first_snippet") or "").replace("\n", " ⏎ ")
+            last_user = (req.get("last_user_snippet") or "").replace("\n", " ⏎ ")
+            last = (req.get("last_snippet") or "").replace("\n", " ⏎ ")
+            if first:
+                lines.append(f"    first msg:     {first[:200]!r}")
+            if last_user and last_user != first:
+                lines.append(f"    last user msg: {last_user[:200]!r}")
+            if last and last != last_user and last != first:
+                lines.append(f"    last msg:      {last[:200]!r}")
+
+            lines.append(
+                f"  response: input={c.get('input_tokens', 0):,} "
+                f"output={c.get('output_tokens', 0):,} "
+                f"cache_read={c.get('cache_read', 0):,} "
+                f"cache_write={c.get('cache_write', 0):,} "
+                f"stop={c.get('stop_reason') or '-'}"
+            )
+            lines.append(
+                f"  source:   provider={c.get('provider', '?')}, "
+                f"caller={c.get('caller', '?')}"
+            )
+            lines.append("")
+
+        # Aggregate by model_type
+        by_type: dict[str, int] = {}
+        for c in history:
+            mt = c.get("model_type", "")
+            if mt.startswith("ModelType."):
+                mt = mt[len("ModelType."):]
+            by_type[mt] = by_type.get(mt, 0) + 1
+        lines.append("By model_type:")
+        for mt, n in sorted(by_type.items(), key=lambda x: -x[1]):
+            lines.append(f"  {mt}: {n}")
         return "\n".join(lines)
 
     def invalidate_context_cache(self):
@@ -716,10 +815,20 @@ class Session:
         return int(len(text) / Session._CHARS_PER_TOKEN)
 
     def check_budget_warning(self) -> str | None:
-        """Return a warning string if token usage is approaching the budget."""
+        """Return a warning string if token usage is approaching the budget.
+
+        Total mirrors OpenCode's context indicator —
+        ``input + output + cache_read + cache_write`` — so the warning
+        triggers on the same volume the user sees in /cost.
+        """
         if self.token_budget <= 0:
             return None
-        total = self.total_input_tokens + self.total_output_tokens
+        total = (
+            self.total_input_tokens
+            + self.total_output_tokens
+            + self.total_cache_read_tokens
+            + self.total_cache_write_tokens
+        )
         pct = total / self.token_budget * 100
         if pct >= 95:
             return f"[bold red]Token budget nearly exhausted ({pct:.0f}%)[/bold red]"

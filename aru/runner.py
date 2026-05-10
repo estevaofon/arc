@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from rich.markdown import Markdown
 
 from aru.display import console
+from aru.session import Session
 
 
 # Categories of tools that modify files (for highlighting in history)
@@ -640,18 +641,30 @@ async def run_agent_capture(agent, message: str, session=None, lightweight: bool
         })
 
         # Tier 2 #4: auto-memory extraction (opt-in, fire-and-forget).
+        # ``turn_tokens`` here is the size of the *exchange* (user message +
+        # assistant reply) — NOT the API call's prompt size. Earlier this
+        # used ``last_input_tokens + last_output_tokens``, but
+        # ``last_input_tokens`` includes the entire system prompt (~8K on
+        # aru with 30+ tools), so ``min_turn_tokens=500`` always tripped
+        # even on "Olá"/"ok"-style turns and the extractor fired every
+        # turn — burning the curator budget on nothing. Estimating from
+        # user+assistant char length matches the docstring intent
+        # ("trivial turns 'ok'/'thanks' don't trigger").
         try:
             from aru.memory.extractor import schedule_extraction_task
             from aru.runtime import get_ctx as _get_ctx
             _cfg = getattr(_get_ctx(), "config", None)
             _cfg_memory = getattr(_cfg, "memory", None) or {}
             _project_root = getattr(session, "project_root", None) or os.getcwd()
+            _exchange_tokens = Session.estimate_tokens(
+                (run_message or "") + (final_content or "")
+            )
             schedule_extraction_task(
                 project_root=_project_root,
                 user_msg=run_message or "",
                 assistant_msg=final_content or "",
                 config_memory=_cfg_memory,
-                turn_tokens=_turn_tokens_in + _turn_tokens_out,
+                turn_tokens=_exchange_tokens,
             )
         except Exception:
             pass  # extractor guards internally; swallow any unexpected raise

@@ -236,7 +236,7 @@ class AruApp(App):
     # Extending this map is the cheapest way to add a new local command.
     _LOCAL_SLASH = {
         "clear", "quit", "exit", "help", "plan",
-        "cost", "compact", "sessions", "model", "undo",
+        "cost", "calls", "compact", "sessions", "model", "undo",
         "skills", "agents", "commands", "mcp", "yolo",
         "theme",
     }
@@ -840,6 +840,8 @@ class AruApp(App):
                 self.action_toggle_plan()
             elif name == "cost":
                 self._slash_cost()
+            elif name == "calls":
+                self._slash_calls()
             elif name == "compact":
                 self._slash_compact()
             elif name == "sessions":
@@ -903,6 +905,18 @@ class AruApp(App):
         except Exception as exc:
             text = f"cost failed: {exc}"
         self._push_chat(text, "cost")
+
+    def _slash_calls(self) -> None:
+        session = self.session
+        if session is None:
+            self._push_chat("No session.", "calls")
+            return
+        try:
+            summary = getattr(session, "calls_summary", None)
+            text = summary if isinstance(summary, str) else str(summary)
+        except Exception as exc:
+            text = f"calls failed: {exc}"
+        self._push_chat(text, "calls")
 
     def _slash_compact(self) -> None:
         session = self.session

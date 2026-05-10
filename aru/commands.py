@@ -31,6 +31,7 @@ SLASH_COMMANDS = [
     ("/debug", "Debug utilities (plugin-errors)", "/debug <subcommand>"),
     ("/undo", "Undo last turn — restore files and/or conversation", "/undo"),
     ("/cost", "Show detailed token usage and cost", "/cost"),
+    ("/calls", "Show per-API-call breakdown (model_type, tokens, stop_reason, caller)", "/calls"),
     ("/yolo", "Toggle DANGEROUSLY skip all permissions (YOLO mode)", "/yolo"),
     ("/quit", "Exit aru", "/quit"),
 ]

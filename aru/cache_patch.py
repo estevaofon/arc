@@ -23,6 +23,9 @@ regardless of which provider is used.
 
 from __future__ import annotations
 
+import os as _os
+import time as _time
+
 # Token-budget pruning (aligned with OpenCode's strategy):
 # - Protect recent tool results within a token budget
 # - Only prune if there's enough to free (avoid churn)
@@ -42,6 +45,22 @@ _last_call_cache_write: int = 0
 # "stop_sequence"/"pause_turn"; OpenAI uses "stop"/"length"/"tool_calls").
 # We normalize "length" → "max_tokens" so callers can check a single value.
 _last_call_stop_reason: str | None = None
+
+# Per-call observability ring buffer. Each accumulate_model_metrics fire
+# appends one record; the ring caps at _CALL_HISTORY_MAX so a long-running
+# session doesn't grow unbounded. Surfaced via /calls so users can see
+# *which* models / model_types / call sites produced each request — the
+# canonical "why are there N api_calls?" diagnosis surface.
+_CALL_HISTORY_MAX = 200
+_call_history: list[dict] = []
+
+# Pending request metadata captured by the request-side patch right before
+# the provider call goes out. Read by ``_patched_accumulate`` after the
+# response lands and merged into the matching call_history record so /calls
+# shows both the response usage AND a summary of what was sent. Single-
+# slot global is OK: aru runs requests sequentially per ctx, and the patch
+# captures-then-clears synchronously around each invocation.
+_pending_request_meta: dict | None = None
 
 # Micro-compaction metrics (process-wide, reset by tests via
 # reset_microcompact_stats()). Recorded by _prune_tool_messages every time it
@@ -103,6 +122,92 @@ def reset_last_stop_reason() -> None:
     """
     global _last_call_stop_reason
     _last_call_stop_reason = None
+
+
+def _summarize_request(messages, tools=None) -> dict:
+    """Build a compact summary of an outgoing request for /calls.
+
+    We deliberately don't store full message bodies — a single tool result
+    can be tens of KB and a long session would balloon memory. We keep:
+
+      * count of messages and per-role tally
+      * total chars across messages (proxy for prompt size)
+      * snippet of the first message (usually system prompt) and the last
+        message (usually the freshest user/tool turn — what the model is
+        responding to)
+      * snippet of the most recent ``user`` message specifically
+      * tool count
+
+    Snippets are capped at 240 chars. Enough to identify the call without
+    storing PII-heavy or token-heavy bodies.
+    """
+    out = {
+        "n_messages": 0,
+        "roles": {},
+        "total_chars": 0,
+        "first_snippet": "",
+        "last_snippet": "",
+        "last_user_snippet": "",
+        "n_tools": 0,
+    }
+    try:
+        msgs = list(messages or [])
+        out["n_messages"] = len(msgs)
+        out["n_tools"] = len(tools or [])
+        last_user = ""
+        for i, m in enumerate(msgs):
+            role = (getattr(m, "role", None) or "?")
+            out["roles"][role] = out["roles"].get(role, 0) + 1
+            content = getattr(m, "content", None)
+            if content is None:
+                content = getattr(m, "text", "")
+            if not isinstance(content, str):
+                try:
+                    content = str(content)
+                except Exception:
+                    content = ""
+            out["total_chars"] += len(content)
+            if i == 0:
+                out["first_snippet"] = content[:240]
+            if role == "user":
+                last_user = content[:240]
+        if msgs:
+            last = msgs[-1]
+            lc = getattr(last, "content", None) or getattr(last, "text", "")
+            if not isinstance(lc, str):
+                try:
+                    lc = str(lc)
+                except Exception:
+                    lc = ""
+            out["last_snippet"] = lc[:240]
+        out["last_user_snippet"] = last_user
+    except Exception:
+        pass
+    return out
+
+
+def _capture_request_meta(messages, tools=None) -> None:
+    """Stash a request summary into the pending slot for the next accumulate."""
+    global _pending_request_meta
+    _pending_request_meta = _summarize_request(messages, tools)
+
+
+def get_call_history() -> list[dict]:
+    """Return a copy of the per-API-call ring buffer.
+
+    Each entry: ``{n, model_type, model_id, provider, input_tokens,
+    output_tokens, cache_read, cache_write, stop_reason, caller, ts}``.
+    ``input_tokens`` is the *normalized* value (cache stripped for OpenAI-
+    style providers). ``caller`` is the agno file:line that invoked
+    accumulate_model_metrics — useful for distinguishing main-model calls
+    from parser/output-model/memory/recovery calls.
+    """
+    return list(_call_history)
+
+
+def reset_call_history() -> None:
+    """Clear the call ring buffer. Useful at session start or in tests."""
+    _call_history.clear()
 
 
 def get_microcompact_stats() -> dict:
@@ -317,6 +422,72 @@ def _prune_tool_messages(messages):
 _PATCH_APPLIED = False
 
 
+def _patch_request_capture():
+    """Wrap the agno methods that receive ``messages`` right before the
+    provider HTTP call so /calls can show what was actually sent.
+
+    We hook the four ``Model._{a,}invoke{_stream,}_with_retry`` methods
+    on ``agno.models.base.Model`` — these are the chokepoint each subclass
+    flows through (sync/async × stream/non-stream). Each wrapper takes a
+    cheap snapshot of ``kwargs["messages"]`` into ``_pending_request_meta``
+    immediately before delegating to the original. ``_patched_accumulate``
+    then reads-and-clears that slot when the matching response lands.
+
+    The wrappers are best-effort: any exception during snapshotting is
+    swallowed so we never break the actual model call. Stream wrappers
+    must remain async generators (``async for ... yield``) — collecting
+    the stream first would defeat streaming.
+    """
+    try:
+        from agno.models.base import Model
+    except ImportError:
+        return
+
+    _orig_invoke = Model._invoke_with_retry
+    _orig_ainvoke = Model._ainvoke_with_retry
+    _orig_invoke_stream = Model._invoke_stream_with_retry
+    _orig_ainvoke_stream = Model._ainvoke_stream_with_retry
+
+    def _wrap_invoke(self, **kwargs):
+        try:
+            _capture_request_meta(kwargs.get("messages"), kwargs.get("tools"))
+        except Exception:
+            pass
+        return _orig_invoke(self, **kwargs)
+
+    async def _wrap_ainvoke(self, **kwargs):
+        try:
+            _capture_request_meta(kwargs.get("messages"), kwargs.get("tools"))
+        except Exception:
+            pass
+        return await _orig_ainvoke(self, **kwargs)
+
+    def _wrap_invoke_stream(self, **kwargs):
+        try:
+            _capture_request_meta(kwargs.get("messages"), kwargs.get("tools"))
+        except Exception:
+            pass
+        # _invoke_stream_with_retry returns an Iterator (sync generator)
+        return _orig_invoke_stream(self, **kwargs)
+
+    async def _wrap_ainvoke_stream(self, **kwargs):
+        try:
+            _capture_request_meta(kwargs.get("messages"), kwargs.get("tools"))
+        except Exception:
+            pass
+        # _ainvoke_stream_with_retry is an async generator — we must
+        # re-yield rather than return it (returning an async generator
+        # from an async def function wraps it in a coroutine that yields
+        # the generator object, which the caller would not iterate).
+        async for chunk in _orig_ainvoke_stream(self, **kwargs):
+            yield chunk
+
+    Model._invoke_with_retry = _wrap_invoke
+    Model._ainvoke_with_retry = _wrap_ainvoke
+    Model._invoke_stream_with_retry = _wrap_invoke_stream
+    Model._ainvoke_stream_with_retry = _wrap_ainvoke_stream
+
+
 def apply_cache_patch():
     """Apply all patches to reduce Agno's token consumption.
 
@@ -334,6 +505,7 @@ def apply_cache_patch():
     _patch_per_call_metrics()
     _patch_stop_reason_capture()
     _patch_overflow_recovery()
+    _patch_request_capture()
     _PATCH_APPLIED = True
 
 
@@ -515,6 +687,10 @@ def _publish_live_metrics(
         session.total_output_tokens += output_tokens
         session.total_cache_read_tokens += cache_read
         session.total_cache_write_tokens += cache_write
+        # Count real API requests (one per accumulate call). track_tokens
+        # used to do this at turn-end (++1), which collapsed multi-tool
+        # turns — a turn with N tool calls = N+1 requests but counted as 1.
+        session.api_calls = (getattr(session, "api_calls", 0) or 0) + 1
         session._live_input_added = (
             getattr(session, "_live_input_added", 0) + input_tokens
         )
@@ -587,6 +763,16 @@ def _patch_per_call_metrics():
         global _last_call_input_tokens, _last_call_output_tokens
         global _last_call_cache_read, _last_call_cache_write
         usage = getattr(model_response, "response_usage", None)
+        # Capture the call site (agno file:line that invoked accumulate)
+        # cheaply — only when there's a usage object worth recording.
+        _caller_str = ""
+        if usage is not None:
+            try:
+                import sys as _sys
+                _frame = _sys._getframe(1)
+                _caller_str = f"{_os.path.basename(_frame.f_code.co_filename)}:{_frame.f_lineno}"
+            except Exception:
+                _caller_str = "?"
         if usage is not None:
             input_tokens = getattr(usage, "input_tokens", 0) or 0
             output_tokens = getattr(usage, "output_tokens", 0) or 0
@@ -603,11 +789,58 @@ def _patch_per_call_metrics():
             is_anthropic = "anthropic" in (provider_name or "").lower()
             if not is_anthropic and cache_read and input_tokens >= cache_read:
                 input_tokens -= cache_read
+                # Mutate the shared usage object so the downstream
+                # ``_original_accumulate`` writes the *normalized* value
+                # into Agno's RunMetrics. Without this, RunMetrics keeps
+                # the raw (cache-inclusive) input while ``_last_call_*``
+                # and the live publish hold the normalized one, and
+                # ``Session.track_tokens`` reconciliation re-adds the
+                # cached portion as a fake "missing delta" — exactly the
+                # cumulative-vs-last asymmetry users see in /cost.
+                try:
+                    usage.input_tokens = input_tokens
+                except (AttributeError, TypeError):
+                    pass
 
             _last_call_input_tokens = input_tokens
             _last_call_output_tokens = output_tokens
             _last_call_cache_read = cache_read
             _last_call_cache_write = cache_write
+
+            # Per-call observability: append to the ring buffer so /calls
+            # can show breakdown by model_type (MODEL vs PARSER_MODEL vs
+            # MEMORY_MODEL etc.) and call site. Bounded to _CALL_HISTORY_MAX
+            # so a long session doesn't grow unbounded.
+            _model_id = ""
+            try:
+                _model_id = getattr(model, "id", "") or ""
+            except Exception:
+                pass
+            _mt_str = (
+                model_type.value
+                if hasattr(model_type, "value")
+                else str(model_type)
+            )
+            global _pending_request_meta
+            _req_meta = _pending_request_meta or {}
+            _pending_request_meta = None
+            _call_history.append({
+                "n": len(_call_history) + 1,
+                "model_type": _mt_str,
+                "model_id": _model_id,
+                "provider": provider_name or "",
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "cache_read": cache_read,
+                "cache_write": cache_write,
+                "stop_reason": _last_call_stop_reason,
+                "caller": _caller_str,
+                "ts": _time.time(),
+                "request": _req_meta,
+            })
+            if len(_call_history) > _CALL_HISTORY_MAX:
+                # Keep the most recent N — drop from the front.
+                del _call_history[: len(_call_history) - _CALL_HISTORY_MAX]
 
             # Intra-turn live session update + bus publish. Gated to the
             # primary agent (subagent_depth == 0) so subagent API calls

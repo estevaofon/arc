@@ -36,7 +36,8 @@
             "models": {
                 "qwen3.6-plus": {
                     "id": "qwen3.6-plus",
-                    "max_tokens": 16384
+                    "max_tokens": 65536,
+                    "context_limit": 1000000
                 }
             },
             "options": {

@@ -38,6 +38,7 @@ SLASH_COMMANDS: list[tuple[str, str]] = [
     ("quit",       "Save and quit"),
     ("exit",       "Save and quit"),
     ("cost",       "Show token usage & cost"),
+    ("calls",      "Per-API-call breakdown"),
     ("model",      "Switch model"),
     ("compact",    "Compact conversation"),
     ("memory",     "Auto-extracted project memories"),

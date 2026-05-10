@@ -761,6 +761,15 @@ async def run_cli(skip_permissions: bool = False, resume_id: str | None = None):
             ))
             continue
 
+        if user_input.lower() == "/calls":
+            console.print(Panel(
+                session.calls_summary,
+                title="[bold]Per-API-Call Breakdown[/bold]",
+                border_style="cyan",
+                padding=(1, 2),
+            ))
+            continue
+
         if user_input.lower() == "/subagents":
             from aru.commands import handle_subagents_command
             handle_subagents_command(session)

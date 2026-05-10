@@ -248,8 +248,15 @@ class TestCompactionTriggerUsesPerCallMetric:
 
     def test_large_per_call_window_still_fires(self):
         """Positive case: compaction must still fire when the last-call
-        window actually approaches the model's context limit."""
-        # qwen3.6-plus: 128K limit, usable = 98K (buffer 30K).
+        window actually approaches the model's context limit.
+
+        Uses ``gpt-4o`` (128K, hardcoded in context.py and not overridable
+        via aru.json by typical users) instead of ``qwen3.6-plus`` so the
+        test is robust against users who configure a custom
+        ``context_limit`` for Qwen in their config (which gets merged into
+        MODEL_CONTEXT_LIMITS at import time and would shift the threshold).
+        """
+        # gpt-4o: 128K limit, usable = 98K (buffer 30K).
         # 105K input + 2K output + 0 cache = 107K window → must fire.
         last_input = 105_000
         last_output = 2_000
@@ -262,7 +269,7 @@ class TestCompactionTriggerUsesPerCallMetric:
         assert last_call_window == 107_000
 
         # 107K > 98K threshold → must fire
-        assert should_compact(last_call_window, model_id="qwen3.6-plus") is True
+        assert should_compact(last_call_window, model_id="gpt-4o") is True
 
     def test_cumulative_metric_is_the_wrong_signal(self):
         """Illustrates WHY the old approach was wrong: a cumulative sum of
@@ -273,12 +280,14 @@ class TestCompactionTriggerUsesPerCallMetric:
         cumulative_if_summed = per_call_window * num_api_calls_in_turn
 
         # Old (wrong) behavior: cumulative triggers compaction
-        assert should_compact(cumulative_if_summed, model_id="qwen3.6-plus") is True
+        # Use gpt-4o (128K, not user-overridable in typical configs) for
+        # the same robustness reason as test_large_per_call_window_still_fires.
+        assert should_compact(cumulative_if_summed, model_id="gpt-4o") is True
 
         # New (correct) behavior: per-call does NOT trigger compaction
-        assert should_compact(per_call_window, model_id="qwen3.6-plus") is False
+        assert should_compact(per_call_window, model_id="gpt-4o") is False
 
-        # The difference is the entire bug (threshold is 98K for qwen3.6-plus)
+        # The difference is the entire bug (threshold is 98K for gpt-4o)
         assert cumulative_if_summed > 98_000 > per_call_window
 
     def test_runner_source_uses_per_call_metric(self):
